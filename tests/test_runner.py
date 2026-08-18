@@ -79,6 +79,31 @@ def test_driver_environment_does_not_inherit_secrets(
     assert "AWS_SECRET_ACCESS_KEY" not in env
 
 
+def test_driver_environment_contains_extended_operation_contract(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "20-oauth-no-credentials.json")
+    server = SimpleNamespace(
+        logical_base_url="https://api.trustedrouter.com:1234/v1",
+        physical_origin="https://127.0.0.1:1234",
+        ca_cert_path=tmp_path / "ephemeral-ca.pem",
+    )
+
+    env = _driver_env(scenario, server, root)
+
+    assert env["TR_CONFORMANCE_ENTRYPOINT"] == "oauth_exchange"
+    assert env["TR_CONFORMANCE_CANCEL_AFTER_MS"] == ""
+    assert json.loads(env["TR_CONFORMANCE_DEFAULT_HEADERS_JSON"]) == {
+        "Authorization": "Bearer MUST-NOT-LEAK",
+        "Cookie": "session=MUST-NOT-LEAK",
+        "Idempotency-Key": "stale-idempotency-key",
+        "Proxy-Authorization": "Bearer MUST-NOT-LEAK",
+        "X-TR-CLIENT": "v=1;a=99;s=0",
+        "X-Api-Key": "MUST-NOT-LEAK",
+        "X-TrustedRouter-Workspace": "stale-workspace",
+        "X-Conformance-Default": "public-client",
+    }
+
+
 def test_missing_driver_executable_is_a_failed_report_entry(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     scenario = load_scenario(root / "scenarios" / "01-success.json")

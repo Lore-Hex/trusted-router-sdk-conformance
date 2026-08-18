@@ -154,6 +154,7 @@ def _driver_env(
             "TR_CONFORMANCE_LOGICAL_BASE_URL": server.logical_base_url,
             "TR_CONFORMANCE_PHYSICAL_ORIGIN": server.physical_origin,
             "TR_CONFORMANCE_METHOD": scenario.operation.method,
+            "TR_CONFORMANCE_ENTRYPOINT": scenario.operation.entrypoint,
             "TR_CONFORMANCE_PATH": scenario.operation.path,
             "TR_CONFORMANCE_BODY_JSON": json.dumps(
                 scenario.operation.body, separators=(",", ":"), ensure_ascii=False
@@ -165,6 +166,16 @@ def _driver_env(
             "TR_CONFORMANCE_MAX_RETRIES": str(scenario.client.max_retries),
             "TR_CONFORMANCE_TIMEOUT_MS": str(scenario.client.timeout_ms),
             "TR_CONFORMANCE_TELEMETRY": "1" if scenario.client.telemetry else "0",
+            "TR_CONFORMANCE_CANCEL_AFTER_MS": (
+                str(scenario.client.cancel_after_ms)
+                if scenario.client.cancel_after_ms is not None
+                else ""
+            ),
+            "TR_CONFORMANCE_DEFAULT_HEADERS_JSON": json.dumps(
+                scenario.client.default_headers,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ),
             "TR_CONFORMANCE_CA_CERT": str(ca_cert),
             # Node reads additional roots only during process initialization.
             "NODE_EXTRA_CA_CERTS": str(ca_cert),

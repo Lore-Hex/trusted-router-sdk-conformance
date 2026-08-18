@@ -1,42 +1,37 @@
 # Coverage and known deviations
 
 This file is intentionally candid: a skipped capability is unimplemented
-coverage, not a passing test. Run with `--strict-capabilities` for a release
-gate that permits none of these gaps.
+coverage, not a passing test. The v0.2 release gate runs every SDK with no
+allowed skips.
 
-| SDK | Core retry/verdict | Transport reset | Telemetry header | Reserved header while opted out | Plain 500 retry |
-| --- | --- | --- | --- | --- | --- |
-| Python | yes | yes | yes | current SDK forwards caller value | yes |
-| JavaScript | yes | yes | not implemented in current SDK | not implemented | yes |
-| Go | yes | yes | yes | covered by SDK ownership rules | yes |
-| Rust | yes | yes | yes | covered by SDK ownership rules | yes |
-| Java | yes | yes | yes | covered by SDK ownership rules | yes |
-| Swift | yes | yes | yes | covered by SDK ownership rules | current code does not retry 500 |
+| SDK | Core retry + telemetry | SSE integrity | Redirect isolation | Safe replay + generated keys | Body timeout + cancellation | Credential-free OAuth | Typed model preservation |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Python | yes | yes | yes | yes | yes | yes | yes |
+| JavaScript | yes | yes | yes | yes | yes | yes | yes |
+| Go | yes | yes | yes | yes | yes | yes | yes |
+| Rust | yes | yes | yes | yes | yes | yes | yes |
+| Java | yes | yes | yes | yes | yes | yes | yes |
+| Swift | yes | yes | yes | yes | yes | yes | yes |
 
-The Swift README says a 500 retries on the same host, while the current retry
-predicate and an existing test permit only one attempt. The `retry-500`
-scenario makes that disagreement explicit: Swift omits the `retry_500`
-capability, and strict mode fails the omission.
+All six manifests advertise the same complete capability set. The explicit
+baseline test fails if a capability disappears or if a new driver is added
+without a deliberate coverage decision.
 
-These are source observations, not permanent exemptions. Delete a deviation
-and add the corresponding driver capability in the same change that brings an
-SDK into conformance.
+## Scope boundary for v0.2
 
-## Scope boundary for v0.1
+The original buffered generic-request core remains intact. The v0.2 scenarios
+add collected SSE integrity, strict redirect isolation, generated
+idempotency, unsafe post-send replay prevention, body timeouts, caller
+cancellation, credential-free OAuth, typed chat/Responses preservation, and
+retry behavior when a diagnostic error body stalls or truncates.
 
-The current matrix is the shared **buffered generic-request core**. It covers
-successful decoding, 429/500/503 retry decisions, server retry-verdict
-overrides, terminal 401 behavior, exact exhaustion, a disconnect before
-response headers, stable caller-supplied idempotency keys, telemetry retry
-state, and reserved telemetry-header ownership.
+These paths have narrow capabilities. A driver may claim one only when it
+invokes the relevant public SDK entry point and its transport adapter preserves
+the fault being measured. Native regressions remain required for injected
+client/session behavior that a black-box loopback adapter cannot reproduce
+without changing SDK semantics.
 
-It does not yet claim coverage of asynchronous entry points, streaming open
-and iteration, a reset or timeout after response headers/body bytes, generated
-idempotency keys, regional affinity/failover, or control-plane requests. The
-fault server already models delayed and truncated responses, but no v0.1
-scenario uses them. In particular, the Swift adapter currently buffers the
-physical response before forwarding it; it must move to incremental delegate
-callbacks before a mid-body reset scenario can measure Swift faithfully.
-
-Those paths should receive separate capabilities and scenarios rather than be
-silently inferred from a buffered-request pass.
+Regional affinity/failover, first-frame streaming deadlines, byte-level SSE
+heartbeat idle timing, and cryptographic attestation validation remain outside
+the shared matrix. They should receive dedicated scenarios instead of being
+inferred from nearby passing checks.

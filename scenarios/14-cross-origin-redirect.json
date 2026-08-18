@@ -1,0 +1,26 @@
+{
+  "protocol_version": 1,
+  "name": "cross-origin-redirect",
+  "description": "A 307 must not replay a prompt or SDK headers to another origin.",
+  "requires": ["core", "redirect_isolation"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": [{"role": "user", "content": "secret"}]},
+    "headers": {"x-conformance-secret": "must-not-cross-origin"},
+    "idempotency_key": "tr-conformance-redirect"
+  },
+  "client": {"max_retries": 0, "timeout_ms": 2000, "telemetry": true},
+  "actions": [
+    {"kind": "cross_origin_redirect", "status": 307}
+  ],
+  "expect": {
+    "outcome": "error",
+    "attempts": 1,
+    "headers": {
+      "authorization": "Bearer tr-conformance-key",
+      "idempotency-key": "tr-conformance-redirect",
+      "x-conformance-secret": "must-not-cross-origin"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "protocol_version": 1,
+  "name": "sse-malformed",
+  "description": "A collected chat stream must reject malformed model JSON rather than skip it.",
+  "requires": ["core", "stream_integrity", "generated_idempotency"],
+  "operation": {
+    "entrypoint": "chat_stream_collect",
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "stream": true, "messages": []},
+    "headers": {}
+  },
+  "client": {"max_retries": 0, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {
+      "kind": "response",
+      "status": 200,
+      "headers": {"content-type": "text/event-stream"},
+      "text": "data: {not-json}\n\ndata: [DONE]\n\n"
+    }
+  ],
+  "expect": {
+    "outcome": "error",
+    "attempts": 1,
+    "headers": {"idempotency-key": {"present": true}}
+  }
+}

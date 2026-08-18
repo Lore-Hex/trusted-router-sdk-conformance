@@ -63,6 +63,7 @@ class _State:
         self.lock = threading.Lock()
         self.requests: list[RecordedRequest] = []
         self.errors: list[str] = []
+        self._active_disconnect_tolerant_responses = 0
 
     def record(self, request: RecordedRequest) -> dict[str, Any]:
         with self.lock:
@@ -79,6 +80,18 @@ class _State:
                     "json": {"error": "conformance scenario exhausted"},
                 }
             return self.scenario.actions[index]
+
+    def begin_disconnect_tolerant_response(self) -> None:
+        with self.lock:
+            self._active_disconnect_tolerant_responses += 1
+
+    def end_disconnect_tolerant_response(self) -> None:
+        with self.lock:
+            self._active_disconnect_tolerant_responses -= 1
+
+    def has_active_disconnect_tolerant_response(self) -> bool:
+        with self.lock:
+            return self._active_disconnect_tolerant_responses > 0
 
 
 def _read_request(sock: socket.socket, index: int) -> RecordedRequest:
@@ -125,36 +138,61 @@ def _read_request(sock: socket.socket, index: int) -> RecordedRequest:
     )
 
 
-def _body(action: dict[str, Any]) -> bytes:
+def _body(action: dict[str, Any], *, stream_requested: bool) -> tuple[bytes, str | None]:
+    if stream_requested and "stream_text" in action:
+        return str(action["stream_text"]).encode(), "text/event-stream"
     if "json" in action:
-        return json.dumps(action["json"], separators=(",", ":"), ensure_ascii=False).encode()
+        return (
+            json.dumps(action["json"], separators=(",", ":"), ensure_ascii=False).encode(),
+            "application/json",
+        )
     if "text" in action:
-        return str(action["text"]).encode()
+        return str(action["text"]).encode(), None
     if "body_base64" in action:
-        return base64.b64decode(action["body_base64"], validate=True)
-    return b""
+        return base64.b64decode(action["body_base64"], validate=True), None
+    return b"", None
 
 
-def _send_response(sock: socket.socket, action: dict[str, Any], *, truncate: bool) -> None:
+def _requests_stream(request: RecordedRequest) -> bool:
+    try:
+        body = json.loads(request.body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(body, dict) and body.get("stream") is True
+
+
+def _send_response(
+    sock: socket.socket,
+    action: dict[str, Any],
+    *,
+    truncate: bool,
+    stream_requested: bool,
+    redirect_location: str | None = None,
+) -> None:
     status = int(action["status"])
     try:
         reason = HTTPStatus(status).phrase
     except ValueError:
         reason = "Harness Response"
-    body = _body(action)
+    body, inferred_content_type = _body(action, stream_requested=stream_requested)
     headers = {str(key): str(value) for key, value in action.get("headers", {}).items()}
+    if redirect_location is not None:
+        headers["Location"] = redirect_location
     lower_names = {key.lower() for key in headers}
     advertised = len(body) + (int(action.get("missing_bytes", 17)) if truncate else 0)
     if "content-length" not in lower_names:
         headers["Content-Length"] = str(advertised)
-    if "content-type" not in lower_names and "json" in action:
-        headers["Content-Type"] = "application/json"
+    if "content-type" not in lower_names and inferred_content_type is not None:
+        headers["Content-Type"] = inferred_content_type
     if "connection" not in lower_names:
         headers["Connection"] = "close"
     head = [f"HTTP/1.1 {status} {reason}\r\n"]
     head.extend(f"{name}: {value}\r\n" for name, value in headers.items())
     head.append("\r\n")
     sock.sendall("".join(head).encode("iso-8859-1"))
+    body_delay_ms = int(action.get("body_delay_ms", 0))
+    if body_delay_ms:
+        time.sleep(body_delay_ms / 1000)
     if truncate:
         prefix_length = action.get("send_bytes")
         if prefix_length is None:
@@ -177,11 +215,16 @@ class _Handler(socketserver.BaseRequestHandler):
         state: _State = self.server.state  # type: ignore[attr-defined]
         sock: socket.socket = self.request
         sock.settimeout(10)
+        action: dict[str, Any] | None = None
+        disconnect_tolerant = False
         try:
             with state.lock:
                 index = len(state.requests)
             request = _read_request(sock, index)
             action = state.record(request)
+            disconnect_tolerant = action.get("allow_client_disconnect") is True
+            if disconnect_tolerant:
+                state.begin_disconnect_tolerant_response()
             delay_ms = int(action.get("delay_ms", 0))
             if delay_ms:
                 time.sleep(delay_ms / 1000)
@@ -189,10 +232,29 @@ class _Handler(socketserver.BaseRequestHandler):
             if kind == "disconnect":
                 _reset(sock)
                 return
-            _send_response(sock, action, truncate=kind == "truncated_response")
+            redirect_location = None
+            if kind == "cross_origin_redirect":
+                port = int(self.server.server_address[1])  # type: ignore[attr-defined]
+                redirect_location = f"https://localhost:{port}/redirect-sink"
+            _send_response(
+                sock,
+                action,
+                truncate=kind == "truncated_response",
+                stream_requested=_requests_stream(request),
+                redirect_location=redirect_location,
+            )
         except (ConnectionError, OSError, ValueError) as exc:
+            # Some clients speculatively open another pooled connection and reset
+            # it when aborting the in-flight body read. That auxiliary handler has
+            # no action of its own, so suppress it only while an explicitly
+            # disconnect-tolerant scenario response is still active.
+            if disconnect_tolerant or state.has_active_disconnect_tolerant_response():
+                return
             with state.lock:
                 state.errors.append(f"server connection error: {type(exc).__name__}: {exc}")
+        finally:
+            if disconnect_tolerant:
+                state.end_disconnect_tolerant_response()
 
 
 class _ThreadingServer(socketserver.ThreadingTCPServer):
@@ -221,6 +283,8 @@ class _ThreadingServer(socketserver.ThreadingTCPServer):
             failed_request = tls_request if tls_request is not None else request
             failed_request.close()
             state: _State = self.state  # type: ignore[attr-defined]
+            if state.has_active_disconnect_tolerant_response():
+                return
             with state.lock:
                 state.errors.append(f"TLS handshake error: {type(exc).__name__}: {exc}")
             return
