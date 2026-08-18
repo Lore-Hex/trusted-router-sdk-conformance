@@ -6,7 +6,17 @@
     "core",
     "telemetry_header",
     "reserved_header_stripping",
-    "transport_fault"
+    "transport_fault",
+    "retry_500",
+    "stream_integrity",
+    "generated_idempotency",
+    "redirect_isolation",
+    "unsafe_retry_guard",
+    "body_timeout",
+    "caller_cancellation",
+    "credential_free_oauth",
+    "model_preservation",
+    "retry_body_fault"
   ],
   "command": ["{python}", "{repo}/drivers/swift/run.py"]
 }

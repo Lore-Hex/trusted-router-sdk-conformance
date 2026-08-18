@@ -1,0 +1,21 @@
+{
+  "protocol_version": 1,
+  "name": "unsafe-post-disconnect",
+  "description": "A generic captured POST without an idempotency key is never replayed.",
+  "requires": ["core", "transport_fault", "unsafe_retry_guard"],
+  "operation": {
+    "method": "POST",
+    "path": "/arbitrary-mutation",
+    "body": {"mutation": "once"},
+    "headers": {}
+  },
+  "client": {"max_retries": 1, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {"kind": "disconnect"}
+  ],
+  "expect": {
+    "outcome": "error",
+    "attempts": 1,
+    "headers": {"idempotency-key": {"absent": true}}
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "protocol_version": 1,
+  "name": "body-timeout",
+  "description": "The logical call timeout remains armed while a buffered response body stalls.",
+  "requires": ["core", "body_timeout"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {},
+    "idempotency_key": "tr-conformance-body-timeout"
+  },
+  "client": {"max_retries": 0, "timeout_ms": 250, "telemetry": false},
+  "actions": [
+    {
+      "kind": "response",
+      "status": 200,
+      "headers": {"content-type": "application/json"},
+      "json": {"ok": true},
+      "body_delay_ms": 1000,
+      "allow_client_disconnect": true
+    }
+  ],
+  "expect": {
+    "outcome": "error",
+    "attempts": 1,
+    "headers": {"idempotency-key": "tr-conformance-body-timeout"}
+  }
+}

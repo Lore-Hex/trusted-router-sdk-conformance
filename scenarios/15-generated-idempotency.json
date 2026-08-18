@@ -1,0 +1,37 @@
+{
+  "protocol_version": 1,
+  "name": "generated-idempotency",
+  "description": "A high-level inference mutation mints one stable key before retrying.",
+  "requires": ["core", "generated_idempotency"],
+  "operation": {
+    "entrypoint": "chat_completions",
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": [{"role": "user", "content": "retry"}]},
+    "headers": {}
+  },
+  "client": {"max_retries": 1, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {"kind": "response", "status": 503, "json": {"error": {"message": "retry"}}},
+    {
+      "kind": "response",
+      "status": 200,
+      "json": {
+        "id": "chatcmpl-idempotent",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "auto",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+      },
+      "stream_text": "data: {\"id\":\"chatcmpl-idempotent\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"auto\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n"
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 2,
+    "value_json_subset": {"id": "chatcmpl-idempotent"},
+    "same_headers": ["idempotency-key"],
+    "headers": {"idempotency-key": {"present": true}}
+  }
+}

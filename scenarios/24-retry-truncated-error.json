@@ -1,0 +1,32 @@
+{
+  "protocol_version": 1,
+  "name": "retry-truncated-error",
+  "description": "A retryable status remains retryable when its diagnostic body is truncated.",
+  "requires": ["core", "transport_fault", "retry_body_fault"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {},
+    "idempotency_key": "tr-conformance-truncated-error"
+  },
+  "client": {"max_retries": 1, "timeout_ms": 1000, "telemetry": false},
+  "actions": [
+    {
+      "kind": "truncated_response",
+      "status": 503,
+      "headers": {"content-type": "application/json"},
+      "text": "{\"error\":{\"message\":\"retry despite truncation\"}}",
+      "send_bytes": 12,
+      "missing_bytes": 17
+    },
+    {"kind": "response", "status": 200, "json": {"ok": true}}
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 2,
+    "value_json_subset": {"ok": true},
+    "same_headers": ["idempotency-key"],
+    "headers": {"idempotency-key": "tr-conformance-truncated-error"}
+  }
+}

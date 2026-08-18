@@ -6,9 +6,11 @@ import socket
 import ssl
 import stat
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from cryptography import x509
@@ -80,6 +82,106 @@ def test_fault_server_returns_599_after_scenario_is_exhausted() -> None:
         transcript = server.transcript()
     assert statuses == [200, 599]
     assert "unexpected request 2" in transcript["server_errors"][0]
+
+
+def test_cross_origin_redirect_points_to_same_tls_sink_and_records_followup() -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "14-cross-origin-redirect.json")
+    with FaultServer(scenario) as server:
+        context = _context(server.ca_cert_path)
+        source = http.client.HTTPSConnection("127.0.0.1", server.port, context=context, timeout=2)
+        source.request("POST", "/v1/chat/completions", body=b'{"secret":true}')
+        response = source.getresponse()
+        assert response.status == 307
+        location = response.getheader("location")
+        assert location is not None
+        response.read()
+        source.close()
+
+        target = urlsplit(location)
+        assert target.hostname == "localhost"
+        assert target.port == server.port
+        sink = http.client.HTTPSConnection("localhost", server.port, context=context, timeout=2)
+        sink.request("POST", target.path, body=b'{"secret":true}')
+        sink_response = sink.getresponse()
+        assert sink_response.status == 599
+        sink_response.read()
+        sink.close()
+        transcript = server.transcript()
+
+    assert len(transcript["requests"]) == 2
+    assert transcript["requests"][1]["target"] == "/redirect-sink"
+    assert "unexpected request 2" in transcript["server_errors"][0]
+
+
+def test_response_headers_can_precede_a_delayed_body() -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "18-body-timeout.json")
+    with FaultServer(scenario) as server:
+        connection = http.client.HTTPSConnection(
+            "127.0.0.1", server.port, context=_context(server.ca_cert_path), timeout=2
+        )
+        started = time.monotonic()
+        connection.request("POST", "/v1/chat/completions", body=b"{}")
+        response = connection.getresponse()
+        headers_received = time.monotonic()
+        assert response.status == 200
+        assert response.read() == b'{"ok":true}'
+        finished = time.monotonic()
+        connection.close()
+
+    assert headers_received >= started
+    assert finished - headers_received >= 0.3
+
+
+def test_expected_body_abort_suppresses_a_concurrent_idle_connection_reset() -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "18-body-timeout.json")
+    with FaultServer(scenario) as server:
+        context = _context(server.ca_cert_path)
+        connection = http.client.HTTPSConnection(
+            "127.0.0.1", server.port, context=context, timeout=2
+        )
+        connection.request("POST", "/v1/chat/completions", body=b"{}")
+        response = connection.getresponse()
+        assert response.status == 200
+
+        # A fetch implementation may establish a spare pooled TLS connection,
+        # then reset it when the active response body is aborted. It has no HTTP
+        # request/action, but belongs to the explicitly disconnect-tolerant call.
+        _handshake(server.port, context, server_hostname="127.0.0.1")
+        speculative = socket.create_connection(("127.0.0.1", server.port), timeout=1)
+        speculative.close()
+        connection.close()
+        time.sleep(1.1)
+        transcript = server.transcript()
+
+    assert len(transcript["requests"]) == 1
+    assert transcript["server_errors"] == []
+
+
+def test_response_variant_follows_captured_stream_flag() -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "22-chat-model-preservation.json")
+
+    for stream, expected_type in ((False, "application/json"), (True, "text/event-stream")):
+        with FaultServer(scenario) as server:
+            connection = http.client.HTTPSConnection(
+                "127.0.0.1", server.port, context=_context(server.ca_cert_path), timeout=2
+            )
+            body = json.dumps({"model": "auto", "stream": stream})
+            connection.request("POST", "/v1/chat/completions", body=body)
+            response = connection.getresponse()
+            payload = response.read()
+            connection.close()
+
+        assert response.status == 200
+        assert response.getheader("content-type") == expected_type
+        if stream:
+            assert payload.startswith(b"data: ")
+            assert payload.endswith(b"data: [DONE]\n\n")
+        else:
+            assert json.loads(payload)["id"] == "chatcmpl-models"
 
 
 def test_stalled_tls_peer_does_not_block_later_requests_or_shutdown() -> None:

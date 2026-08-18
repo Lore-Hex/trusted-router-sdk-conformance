@@ -1,0 +1,46 @@
+{
+  "protocol_version": 1,
+  "name": "oauth-cross-origin-redirect",
+  "description": "A credential-free OAuth exchange rejects a cross-origin redirect without contacting it.",
+  "requires": ["core", "credential_free_oauth", "redirect_isolation"],
+  "operation": {
+    "entrypoint": "oauth_exchange",
+    "method": "POST",
+    "path": "/auth/keys",
+    "body": {
+      "code": "conformance-code",
+      "code_verifier": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~abc"
+    },
+    "headers": {}
+  },
+  "client": {
+    "max_retries": 0,
+    "timeout_ms": 2000,
+    "telemetry": false,
+    "default_headers": {
+      "Authorization": "Bearer MUST-NOT-LEAK",
+      "Cookie": "session=MUST-NOT-LEAK",
+      "Idempotency-Key": "stale-idempotency-key",
+      "Proxy-Authorization": "Bearer MUST-NOT-LEAK",
+      "X-TR-CLIENT": "v=1;a=99;s=0",
+      "X-Api-Key": "MUST-NOT-LEAK",
+      "X-TrustedRouter-Workspace": "stale-workspace"
+    }
+  },
+  "actions": [
+    {"kind": "cross_origin_redirect", "status": 307}
+  ],
+  "expect": {
+    "outcome": "error",
+    "attempts": 1,
+    "headers": {
+      "authorization": {"absent": true},
+      "cookie": {"absent": true},
+      "idempotency-key": {"absent": true},
+      "proxy-authorization": {"absent": true},
+      "x-tr-client": {"absent": true},
+      "x-api-key": {"absent": true},
+      "x-trustedrouter-workspace": {"absent": true}
+    }
+  }
+}

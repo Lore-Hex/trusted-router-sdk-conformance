@@ -96,7 +96,7 @@ jobs:
         run: >-
           PYTHONPATH=src python -m trusted_router_conformance
           --sdk python
-          --allowed-skips reserved-header-opt-out
+          --allowed-skips none
           --sdk-root python=$GITHUB_WORKSPACE/sdks/trusted-router-py
           --json-report .conformance/python.json
       - uses: actions/upload-artifact@v4
@@ -130,7 +130,7 @@ jobs:
         run: >-
           PYTHONPATH=src python -m trusted_router_conformance
           --sdk javascript
-          --allowed-skips telemetry-retry,reserved-header-opt-out
+          --allowed-skips none
           --sdk-root javascript=$GITHUB_WORKSPACE/sdks/trusted-router-js
           --json-report .conformance/javascript.json
       - uses: actions/upload-artifact@v4
@@ -264,7 +264,7 @@ jobs:
         run: >-
           PYTHONPATH=src python -m trusted_router_conformance
           --sdk swift
-          --allowed-skips retry-500
+          --allowed-skips none
           --sdk-root swift=$GITHUB_WORKSPACE/sdks/trusted-router-swift
           --json-report .conformance/swift.json
       - uses: actions/upload-artifact@v4

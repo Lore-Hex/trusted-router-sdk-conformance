@@ -2,7 +2,22 @@
   "protocol_version": 1,
   "sdk": "python",
   "root_name": "trusted-router-py",
-  "capabilities": ["core", "retry_500", "telemetry_header", "transport_fault"],
+  "capabilities": [
+    "core",
+    "retry_500",
+    "telemetry_header",
+    "reserved_header_stripping",
+    "transport_fault",
+    "stream_integrity",
+    "generated_idempotency",
+    "redirect_isolation",
+    "unsafe_retry_guard",
+    "body_timeout",
+    "caller_cancellation",
+    "credential_free_oauth",
+    "model_preservation",
+    "retry_body_fault"
+  ],
   "command": [
     "uv",
     "run",

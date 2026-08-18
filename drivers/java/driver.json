@@ -11,6 +11,15 @@
     "reserved_header_stripping",
     "retry_500",
     "telemetry_header",
-    "transport_fault"
+    "transport_fault",
+    "stream_integrity",
+    "generated_idempotency",
+    "redirect_isolation",
+    "unsafe_retry_guard",
+    "body_timeout",
+    "caller_cancellation",
+    "credential_free_oauth",
+    "model_preservation",
+    "retry_body_fault"
   ]
 }

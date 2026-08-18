@@ -1,0 +1,31 @@
+{
+  "protocol_version": 1,
+  "name": "sse-truncated",
+  "description": "A collected chat stream must reject EOF before the terminal sentinel.",
+  "requires": ["core", "stream_integrity", "generated_idempotency"],
+  "operation": {
+    "entrypoint": "chat_stream_collect",
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {
+      "model": "auto",
+      "stream": true,
+      "messages": [{"role": "user", "content": "conformance"}]
+    },
+    "headers": {}
+  },
+  "client": {"max_retries": 0, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {
+      "kind": "response",
+      "status": 200,
+      "headers": {"content-type": "text/event-stream"},
+      "text": "data: {\"id\":\"chatcmpl-partial\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"auto\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"},\"finish_reason\":null}]}\n\n"
+    }
+  ],
+  "expect": {
+    "outcome": "error",
+    "attempts": 1,
+    "headers": {"idempotency-key": {"present": true}}
+  }
+}

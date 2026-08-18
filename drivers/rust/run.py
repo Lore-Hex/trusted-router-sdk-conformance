@@ -24,16 +24,12 @@ rust-version = "1.88"
 publish = false
 
 [dependencies]
+futures-util = "0.3.31"
 http = "1.3.1"
 serde_json = "1.0.140"
 tokio = {{ version = "1.44.2", features = ["macros", "rt-multi-thread", "time"] }}
 trusted-router = {{ path = {crate_path}, default-features = false }}
 url = "2.5.4"
-
-[dependencies.reqwest]
-version = "0.12.15"
-default-features = false
-features = ["json", "stream", "rustls-tls-webpki-roots"]
 """
 
 

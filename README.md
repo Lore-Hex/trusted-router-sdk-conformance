@@ -20,9 +20,11 @@ real SDK → thin adapter → loopback fault server → wire transcript
 ```
 
 This catches the failures ordinary unit tests tend to miss: the exact number
-of physical attempts, duplicate headers after retries, idempotency-key drift,
-transport-library recovery, response-verdict precedence, telemetry state
-carried from one attempt to the next, and behavior after malformed sockets.
+of physical attempts, duplicate headers after retries, generated
+idempotency-key drift, transport-library recovery, cross-origin replay,
+response-body deadlines, cancellation, premature streaming success,
+credential scope, typed-model data loss, response-verdict precedence, and
+telemetry state carried from one attempt to the next.
 
 ## Quick start
 
@@ -69,7 +71,7 @@ native build tool on first use.
 
 Every scenario is a versioned JSON document under `scenarios/`. It specifies:
 
-- the public inference operation;
+- the public SDK entry point and operation;
 - client retry, timeout, and telemetry configuration;
 - an ordered sequence of real socket actions;
 - exact outcome and wire-level assertions; and
@@ -80,10 +82,9 @@ Missing capabilities are visible `SKIP`s by default. Use
 That distinction lets the nightly suite test all current SDKs while strict
 release gates prevent known gaps from being mistaken for conformance.
 
-Current source-level gaps exposed by the matrix are recorded in
-[`docs/coverage.md`](docs/coverage.md). In particular, the harness does not
-silently pretend an SDK emits or strips a header when its current public code
-does not.
+The current capability state and any future gaps exposed by the matrix are
+recorded in [`docs/coverage.md`](docs/coverage.md). The harness does not
+silently treat an unimplemented behavior as a pass.
 
 ## Security and isolation
 

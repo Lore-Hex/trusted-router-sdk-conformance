@@ -33,6 +33,10 @@ private func environment(_ name: String) throws -> String {
     return value
 }
 
+private func optionalEnvironment(_ name: String, default defaultValue: String = "") -> String {
+    ProcessInfo.processInfo.environment["TR_CONFORMANCE_\(name)"] ?? defaultValue
+}
+
 #if canImport(Security)
 /// Darwin URLSession does not honor the libcurl CA environment variables.
 /// Anchor each physical forwarding session to the harness certificate and to
@@ -90,6 +94,7 @@ private final class TestCATrustDelegate: NSObject, URLSessionDelegate, @unchecke
 private final class LogicalOriginProtocol: URLProtocol, @unchecked Sendable {
     private var forwardingTask: URLSessionDataTask?
     private var forwardingSession: URLSession?
+    private var forwardingDelegate: PhysicalForwardingDelegate?
 
     override class func canInit(with request: URLRequest) -> Bool {
         request.url?.host?.lowercased() == "api.trustedrouter.com"
@@ -130,63 +135,27 @@ private final class LogicalOriginProtocol: URLProtocol, @unchecked Sendable {
             forwarded.setValue(logicalAuthority, forHTTPHeaderField: "Host")
 
             let configuration = URLSessionConfiguration.ephemeral
+            let delegate: PhysicalForwardingDelegate
             #if canImport(Security)
-            let trustDelegate = try TestCATrustDelegate(certificatePath: environment("CA_CERT"))
-            let session = URLSession(
-                configuration: configuration,
-                delegate: trustDelegate,
-                delegateQueue: nil
+            delegate = try PhysicalForwardingDelegate(
+                owner: self,
+                logicalURL: logicalURL,
+                trustDelegate: TestCATrustDelegate(certificatePath: environment("CA_CERT"))
             )
             #else
-            // FoundationNetworking/libcurl consumes SSL_CERT_FILE and
-            // CURL_CA_BUNDLE, set by run.py to TR_CONFORMANCE_CA_CERT.
-            let session = URLSession(configuration: configuration)
+            delegate = PhysicalForwardingDelegate(owner: self, logicalURL: logicalURL)
             #endif
+            // The forwarding transport is incremental. The outer SDK task
+            // therefore owns body deadlines and cancellation rather than
+            // waiting behind a fully buffered adapter request.
+            let session = URLSession(
+                configuration: configuration,
+                delegate: delegate,
+                delegateQueue: nil
+            )
+            forwardingDelegate = delegate
             forwardingSession = session
-            forwardingTask = session.dataTask(with: forwarded) { [weak self] data, response, error in
-                guard let self else { return }
-                if let error {
-                    self.client?.urlProtocol(self, didFailWithError: error)
-                    self.finishForwarding()
-                    return
-                }
-                guard let response = response as? HTTPURLResponse else {
-                    self.client?.urlProtocol(
-                        self,
-                        didFailWithError: DriverFailure.forwarding("physical origin returned a non-HTTP response")
-                    )
-                    self.finishForwarding()
-                    return
-                }
-
-                var headers: [String: String] = [:]
-                for (name, value) in response.allHeaderFields {
-                    headers[String(describing: name)] = String(describing: value)
-                }
-                guard let logicalResponse = HTTPURLResponse(
-                    url: logicalURL,
-                    statusCode: response.statusCode,
-                    httpVersion: "HTTP/1.1",
-                    headerFields: headers
-                ) else {
-                    self.client?.urlProtocol(
-                        self,
-                        didFailWithError: DriverFailure.forwarding("could not construct logical HTTP response")
-                    )
-                    self.finishForwarding()
-                    return
-                }
-                self.client?.urlProtocol(
-                    self,
-                    didReceive: logicalResponse,
-                    cacheStoragePolicy: .notAllowed
-                )
-                if let data, !data.isEmpty {
-                    self.client?.urlProtocol(self, didLoad: data)
-                }
-                self.client?.urlProtocolDidFinishLoading(self)
-                self.finishForwarding()
-            }
+            forwardingTask = session.dataTask(with: forwarded)
             forwardingTask?.resume()
         } catch {
             client?.urlProtocol(self, didFailWithError: error)
@@ -198,6 +167,7 @@ private final class LogicalOriginProtocol: URLProtocol, @unchecked Sendable {
         forwardingTask?.cancel()
         forwardingSession?.invalidateAndCancel()
         forwardingTask = nil
+        forwardingDelegate = nil
         forwardingSession = nil
     }
 
@@ -205,6 +175,139 @@ private final class LogicalOriginProtocol: URLProtocol, @unchecked Sendable {
         forwardingTask = nil
         forwardingSession?.finishTasksAndInvalidate()
         forwardingSession = nil
+        forwardingDelegate = nil
+    }
+
+    fileprivate func receive(_ response: HTTPURLResponse, logicalURL: URL) {
+        var headers: [String: String] = [:]
+        for (name, value) in response.allHeaderFields {
+            headers[String(describing: name)] = String(describing: value)
+        }
+        guard let logicalResponse = HTTPURLResponse(
+            url: logicalURL,
+            statusCode: response.statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: headers
+        ) else {
+            fail(DriverFailure.forwarding("could not construct logical HTTP response"))
+            return
+        }
+        client?.urlProtocol(self, didReceive: logicalResponse, cacheStoragePolicy: .notAllowed)
+    }
+
+    fileprivate func receive(_ data: Data) {
+        if !data.isEmpty { client?.urlProtocol(self, didLoad: data) }
+    }
+
+    fileprivate func redirect(
+        response: HTTPURLResponse,
+        newRequest: URLRequest,
+        logicalURL: URL
+    ) {
+        var headers: [String: String] = [:]
+        for (name, value) in response.allHeaderFields {
+            headers[String(describing: name)] = String(describing: value)
+        }
+        guard let logicalResponse = HTTPURLResponse(
+            url: logicalURL,
+            statusCode: response.statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: headers
+        ) else {
+            fail(DriverFailure.forwarding("could not construct logical redirect response"))
+            return
+        }
+        // Feed the redirect into the OUTER URLSession. Its per-task SDK
+        // delegate must reject it; the physical adapter merely preserves the
+        // protocol event and never makes the policy decision itself.
+        client?.urlProtocol(self, wasRedirectedTo: newRequest, redirectResponse: logicalResponse)
+    }
+
+    fileprivate func complete(_ error: Error?) {
+        if let error {
+            client?.urlProtocol(self, didFailWithError: error)
+        } else {
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        finishForwarding()
+    }
+
+    private func fail(_ error: Error) {
+        client?.urlProtocol(self, didFailWithError: error)
+        finishForwarding()
+    }
+}
+
+private final class PhysicalForwardingDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private weak var owner: LogicalOriginProtocol?
+    private let logicalURL: URL
+    private var redirected = false
+    #if canImport(Security)
+    private let trustDelegate: TestCATrustDelegate
+
+    init(owner: LogicalOriginProtocol, logicalURL: URL, trustDelegate: TestCATrustDelegate) {
+        self.owner = owner
+        self.logicalURL = logicalURL
+        self.trustDelegate = trustDelegate
+    }
+    #else
+    init(owner: LogicalOriginProtocol, logicalURL: URL) {
+        self.owner = owner
+        self.logicalURL = logicalURL
+    }
+    #endif
+
+    #if canImport(Security)
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        trustDelegate.urlSession(
+            session, didReceive: challenge, completionHandler: completionHandler
+        )
+    }
+    #endif
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        guard let http = response as? HTTPURLResponse else {
+            completionHandler(.cancel)
+            owner?.complete(DriverFailure.forwarding("physical origin returned a non-HTTP response"))
+            return
+        }
+        owner?.receive(http, logicalURL: logicalURL)
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        owner?.receive(data)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        redirected = true
+        owner?.redirect(response: response, newRequest: request, logicalURL: logicalURL)
+        // The outer logical task owns follow/reject policy.
+        completionHandler(nil)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        guard !redirected else { return }
+        owner?.complete(error)
     }
 }
 
@@ -247,6 +350,10 @@ private func normalizedValue(_ data: Data) -> Any {
         return value
     }
     return ["body_base64": data.base64EncodedString()]
+}
+
+private func normalizedEncodable<T: Encodable>(_ value: T) throws -> Any {
+    normalizedValue(try JSONEncoder().encode(value))
 }
 
 private func normalizedError(_ error: Error) -> [String: Any] {
@@ -313,7 +420,18 @@ private enum DriverMain {
         do {
             let configuration = URLSessionConfiguration.ephemeral
             configuration.protocolClasses = [LogicalOriginProtocol.self]
+            configuration.httpAdditionalHeaders = try requestHeaders(
+                optionalEnvironment("DEFAULT_HEADERS_JSON", default: "{}")
+            )
+            #if canImport(Security)
+            let session = URLSession(
+                configuration: configuration,
+                delegate: try TestCATrustDelegate(certificatePath: environment("CA_CERT")),
+                delegateQueue: nil
+            )
+            #else
             let session = URLSession(configuration: configuration)
+            #endif
 
             let maxRetriesRaw = try environment("MAX_RETRIES")
             let timeoutRaw = try environment("TIMEOUT_MS")
@@ -329,31 +447,130 @@ private enum DriverMain {
             }
 
             let logicalBaseURL = try logicalHTTPSBaseURL(environment("LOGICAL_BASE_URL"))
-            let client = try TrustedRouter(options: TrustedRouterOptions(
-                apiKey: "tr-conformance-key",
-                baseUrl: logicalBaseURL,
-                controlBaseURL: logicalBaseURL,
-                urlSession: session,
-                maxRetries: maxRetries,
-                regionalFailover: false,
-                telemetry: telemetryRaw == "1",
-                regionalAffinity: false
-            ))
+            let entrypoint = optionalEnvironment("ENTRYPOINT", default: "generic_json")
+            let client: TrustedRouter?
+            if entrypoint == "oauth_exchange" {
+                // The public OAuth helper owns sanitizing the injected
+                // session. Do not first construct an authenticated client,
+                // which would reject a stale reserved session default before
+                // that credential-free path gets a chance to remove it.
+                client = nil
+            } else {
+                client = try TrustedRouter(options: TrustedRouterOptions(
+                    apiKey: "tr-conformance-key",
+                    baseUrl: logicalBaseURL,
+                    controlBaseURL: logicalBaseURL,
+                    urlSession: session,
+                    maxRetries: maxRetries,
+                    regionalFailover: false,
+                    telemetry: telemetryRaw == "1",
+                    regionalAffinity: false
+                ))
+            }
 
             let idempotencyKey = try environment("IDEMPOTENCY_KEY")
-            let body = Data(try environment("BODY_JSON").utf8)
-            let value: Data = try await client.request(
-                method: environment("METHOD"),
-                path: environment("PATH"),
-                headers: requestHeaders(environment("HEADERS_JSON")),
-                body: body,
-                options: PerCallOptions(
-                    idempotencyKey: idempotencyKey.isEmpty ? nil : idempotencyKey,
-                    timeout: Double(timeoutMilliseconds) / 1_000.0
-                ),
-                plane: .inference
+            let bodyData = Data(try environment("BODY_JSON").utf8)
+            let bodyObject = try JSONSerialization.jsonObject(
+                with: bodyData, options: [.fragmentsAllowed]
             )
-            emit(outcome: "success", value: normalizedValue(value), error: nil)
+            let callOptions = PerCallOptions(
+                extraHeaders: try requestHeaders(environment("HEADERS_JSON")),
+                idempotencyKey: idempotencyKey.isEmpty ? nil : idempotencyKey,
+                timeout: Double(timeoutMilliseconds) / 1_000.0
+            )
+            let operation = Task<Any, Error> {
+                switch entrypoint {
+                case "generic_json":
+                    guard let client else {
+                        throw DriverFailure.invalidEnvironment("generic_json requires a client")
+                    }
+                    let value: Data = try await client.request(
+                        method: try environment("METHOD"),
+                        path: try environment("PATH"),
+                        body: bodyData,
+                        options: callOptions,
+                        plane: .inference
+                    )
+                    return normalizedValue(value)
+                case "chat_completions", "chat_stream_collect":
+                    guard let client else {
+                        throw DriverFailure.invalidEnvironment("chat entrypoint requires a client")
+                    }
+                    guard var body = bodyObject as? [String: Any],
+                          let messages = body.removeValue(forKey: "messages")
+                            as? [[String: Any]]
+                    else {
+                        throw DriverFailure.invalidEnvironment(
+                            "chat entrypoint requires a messages array"
+                        )
+                    }
+                    let model = (body.removeValue(forKey: "model") as? String)
+                        ?? TrustedRouterConstants.autoModel
+                    body.removeValue(forKey: "stream")
+                    let completion = try await client.chatCompletions(
+                        model: model,
+                        messages: messages,
+                        options: callOptions,
+                        params: body
+                    )
+                    return try normalizedEncodable(completion)
+                case "responses":
+                    guard let client else {
+                        throw DriverFailure.invalidEnvironment("responses entrypoint requires a client")
+                    }
+                    guard var body = bodyObject as? [String: Any],
+                          let input = body.removeValue(forKey: "input")
+                    else {
+                        throw DriverFailure.invalidEnvironment(
+                            "responses entrypoint requires input"
+                        )
+                    }
+                    let model = (body.removeValue(forKey: "model") as? String)
+                        ?? TrustedRouterConstants.autoModel
+                    let instructions = body.removeValue(forKey: "instructions") as? String
+                    body.removeValue(forKey: "stream")
+                    let response = try await client.responses(
+                        model: model,
+                        input: input,
+                        instructions: instructions,
+                        options: callOptions,
+                        params: body
+                    )
+                    return try normalizedEncodable(response)
+                case "oauth_exchange":
+                    guard let body = bodyObject as? [String: Any],
+                          let code = body["code"] as? String
+                    else {
+                        throw DriverFailure.invalidEnvironment(
+                            "oauth_exchange requires code"
+                        )
+                    }
+                    let token = try await exchangeOAuthKey(
+                        code: code,
+                        codeVerifier: body["code_verifier"] as? String,
+                        codeChallengeMethod: body["code_challenge_method"] as? String,
+                        baseURL: logicalBaseURL,
+                        urlSession: session
+                    )
+                    return try normalizedEncodable(token)
+                default:
+                    throw DriverFailure.invalidEnvironment(
+                        "unsupported TR_CONFORMANCE_ENTRYPOINT: \(entrypoint)"
+                    )
+                }
+            }
+            let cancellation: Task<Void, Never>?
+            if let cancelAfter = Int(optionalEnvironment("CANCEL_AFTER_MS")), cancelAfter > 0 {
+                cancellation = Task {
+                    try? await Task.sleep(nanoseconds: UInt64(cancelAfter) * 1_000_000)
+                    operation.cancel()
+                }
+            } else {
+                cancellation = nil
+            }
+            defer { cancellation?.cancel() }
+            let value = try await operation.value
+            emit(outcome: "success", value: value, error: nil)
             session.finishTasksAndInvalidate()
         } catch {
             emit(outcome: "error", value: nil, error: error)

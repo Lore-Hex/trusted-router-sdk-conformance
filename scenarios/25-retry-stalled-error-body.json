@@ -1,0 +1,32 @@
+{
+  "protocol_version": 1,
+  "name": "retry-stalled-error-body",
+  "description": "A stalled diagnostic body cannot prevent an otherwise-safe retry.",
+  "requires": ["core", "body_timeout", "retry_body_fault"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {},
+    "idempotency_key": "tr-conformance-stalled-error"
+  },
+  "client": {"max_retries": 1, "timeout_ms": 1000, "telemetry": false},
+  "actions": [
+    {
+      "kind": "response",
+      "status": 503,
+      "headers": {"content-type": "application/json"},
+      "json": {"error": {"message": "slow diagnostic"}},
+      "body_delay_ms": 3000,
+      "allow_client_disconnect": true
+    },
+    {"kind": "response", "status": 200, "json": {"ok": true}}
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 2,
+    "value_json_subset": {"ok": true},
+    "same_headers": ["idempotency-key"],
+    "headers": {"idempotency-key": "tr-conformance-stalled-error"}
+  }
+}

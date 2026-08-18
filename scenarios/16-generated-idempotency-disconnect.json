@@ -1,0 +1,36 @@
+{
+  "protocol_version": 1,
+  "name": "generated-idempotency-disconnect",
+  "description": "A captured high-level POST retries a disconnect only with its stable generated key.",
+  "requires": ["core", "transport_fault", "generated_idempotency"],
+  "operation": {
+    "entrypoint": "chat_completions",
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {}
+  },
+  "client": {"max_retries": 1, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {"kind": "disconnect"},
+    {
+      "kind": "response",
+      "status": 200,
+      "json": {
+        "id": "chatcmpl-after-disconnect",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "auto",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]
+      },
+      "stream_text": "data: {\"id\":\"chatcmpl-after-disconnect\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"auto\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 2,
+    "value_json_subset": {"id": "chatcmpl-after-disconnect"},
+    "same_headers": ["idempotency-key"],
+    "headers": {"idempotency-key": {"present": true}}
+  }
+}

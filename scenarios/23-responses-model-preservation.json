@@ -1,0 +1,56 @@
+{
+  "protocol_version": 1,
+  "name": "responses-model-preservation",
+  "description": "Typed Responses APIs preserve generated output, usage, status, and details.",
+  "requires": ["core", "model_preservation", "generated_idempotency"],
+  "operation": {
+    "entrypoint": "responses",
+    "method": "POST",
+    "path": "/responses",
+    "body": {"model": "auto", "input": "conformance"},
+    "headers": {}
+  },
+  "client": {"max_retries": 0, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {
+      "kind": "response",
+      "status": 200,
+      "json": {
+        "id": "resp-models",
+        "object": "response",
+        "created_at": 1,
+        "status": "completed",
+        "model": "auto",
+        "output": [
+          {
+            "id": "msg-models",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "preserved", "annotations": []}]
+          }
+        ],
+        "usage": {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7},
+        "error": null,
+        "details": {"provider": "conformance"}
+      }
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 1,
+    "value_json_subset": {
+      "id": "resp-models",
+      "status": "completed",
+      "output": [
+        {
+          "id": "msg-models",
+          "content": [{"type": "output_text", "text": "preserved"}]
+        }
+      ],
+      "usage": {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7},
+      "error": null,
+      "details": {"provider": "conformance"}
+    },
+    "headers": {"idempotency-key": {"present": true}}
+  }
+}

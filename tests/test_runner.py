@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +15,7 @@ from trusted_router_conformance.runner import (
     RunResult,
     _driver_env,
     _parse_driver_json,
+    _run_driver_process,
     repository_root,
     run_one,
 )
@@ -79,6 +83,31 @@ def test_driver_environment_does_not_inherit_secrets(
     assert "AWS_SECRET_ACCESS_KEY" not in env
 
 
+def test_driver_environment_contains_extended_operation_contract(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "20-oauth-no-credentials.json")
+    server = SimpleNamespace(
+        logical_base_url="https://api.trustedrouter.com:1234/v1",
+        physical_origin="https://127.0.0.1:1234",
+        ca_cert_path=tmp_path / "ephemeral-ca.pem",
+    )
+
+    env = _driver_env(scenario, server, root)
+
+    assert env["TR_CONFORMANCE_ENTRYPOINT"] == "oauth_exchange"
+    assert env["TR_CONFORMANCE_CANCEL_AFTER_MS"] == ""
+    assert json.loads(env["TR_CONFORMANCE_DEFAULT_HEADERS_JSON"]) == {
+        "Authorization": "Bearer MUST-NOT-LEAK",
+        "Cookie": "session=MUST-NOT-LEAK",
+        "Idempotency-Key": "stale-idempotency-key",
+        "Proxy-Authorization": "Bearer MUST-NOT-LEAK",
+        "X-TR-CLIENT": "v=1;a=99;s=0",
+        "X-Api-Key": "MUST-NOT-LEAK",
+        "X-TrustedRouter-Workspace": "stale-workspace",
+        "X-Conformance-Default": "public-client",
+    }
+
+
 def test_missing_driver_executable_is_a_failed_report_entry(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     scenario = load_scenario(root / "scenarios" / "01-success.json")
@@ -121,6 +150,35 @@ def test_invalid_driver_command_template_is_a_failed_result(tmp_path: Path) -> N
     assert result.transcript is not None
     assert result.transcript["requests"] == []
     assert result.failures == ("invalid driver command template: 'unsupported_placeholder'",)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group regression")
+def test_manual_interruption_kills_the_driver_process_group(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class InterruptedProcess:
+        pid = 4242
+        returncode = None
+
+        def __init__(self) -> None:
+            self.communicate_calls = 0
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            self.communicate_calls += 1
+            if self.communicate_calls == 1:
+                raise KeyboardInterrupt
+            return "", ""
+
+    process = InterruptedProcess()
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+
+    with pytest.raises(KeyboardInterrupt):
+        _run_driver_process(["driver"], cwd=tmp_path, env={}, timeout=1)
+
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.communicate_calls == 2
 
 
 def test_repository_root_falls_back_to_packaged_assets(

@@ -1,0 +1,34 @@
+{
+  "protocol_version": 1,
+  "name": "caller-cancellation",
+  "description": "Caller cancellation aborts a response body read before the SDK timeout.",
+  "requires": ["core", "caller_cancellation"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {},
+    "idempotency_key": "tr-conformance-cancel"
+  },
+  "client": {
+    "max_retries": 0,
+    "timeout_ms": 10000,
+    "cancel_after_ms": 1500,
+    "telemetry": false
+  },
+  "actions": [
+    {
+      "kind": "response",
+      "status": 200,
+      "headers": {"content-type": "application/json"},
+      "json": {"ok": true},
+      "body_delay_ms": 4000,
+      "allow_client_disconnect": true
+    }
+  ],
+  "expect": {
+    "outcome": "error",
+    "attempts": 1,
+    "headers": {"idempotency-key": "tr-conformance-cancel"}
+  }
+}

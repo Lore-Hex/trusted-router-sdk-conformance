@@ -15,7 +15,25 @@ from pathlib import Path
 from typing import Any
 
 PROTOCOL_VERSION = 1
-ACTION_KINDS = {"response", "disconnect", "truncated_response"}
+ACTION_KINDS = {
+    "response",
+    "disconnect",
+    "truncated_response",
+    "cross_origin_redirect",
+}
+ENTRYPOINTS = {
+    "generic_json",
+    "chat_completions",
+    "chat_stream_collect",
+    "responses",
+    "oauth_exchange",
+}
+_ENTRYPOINT_OPERATIONS = {
+    "chat_completions": ("POST", "/chat/completions"),
+    "chat_stream_collect": ("POST", "/chat/completions"),
+    "responses": ("POST", "/responses"),
+    "oauth_exchange": ("POST", "/auth/keys"),
+}
 OUTCOMES = {"success", "error"}
 _HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 _SCENARIO_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -95,6 +113,7 @@ def _header_rules(value: Any, where: str) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class Operation:
+    entrypoint: str
     method: str
     path: str
     body: Any
@@ -107,6 +126,8 @@ class ClientConfig:
     max_retries: int
     timeout_ms: int
     telemetry: bool
+    cancel_after_ms: int | None
+    default_headers: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -164,13 +185,23 @@ def load_scenario(path: str | Path) -> Scenario:
     operation_raw = _object(data.get("operation"), f"{source}.operation")
     _only_keys(
         operation_raw,
-        {"method", "path", "body", "headers", "idempotency_key"},
+        {"entrypoint", "method", "path", "body", "headers", "idempotency_key"},
         f"{source}.operation",
     )
+    entrypoint = operation_raw.get("entrypoint", "generic_json")
+    if entrypoint not in ENTRYPOINTS:
+        raise SchemaError(f"{source}.operation.entrypoint must be one of {sorted(ENTRYPOINTS)}")
     method = _string(operation_raw.get("method"), f"{source}.operation.method").upper()
     path_value = _string(operation_raw.get("path"), f"{source}.operation.path")
     if not path_value.startswith("/") or path_value.startswith("//"):
         raise SchemaError(f"{source}.operation.path must start with one slash")
+    expected_operation = _ENTRYPOINT_OPERATIONS.get(entrypoint)
+    if expected_operation is not None and (method, path_value) != expected_operation:
+        expected_method, expected_path = expected_operation
+        raise SchemaError(
+            f"{source}.operation entrypoint {entrypoint!r} requires "
+            f"{expected_method} {expected_path}"
+        )
     headers_raw = _headers(operation_raw.get("headers", {}), f"{source}.operation.headers")
     idempotency_key = operation_raw.get("idempotency_key")
     if idempotency_key is not None:
@@ -179,18 +210,37 @@ def load_scenario(path: str | Path) -> Scenario:
     client_raw = _object(data.get("client", {}), f"{source}.client")
     _only_keys(
         client_raw,
-        {"max_retries", "timeout_ms", "telemetry"},
+        {
+            "max_retries",
+            "timeout_ms",
+            "telemetry",
+            "cancel_after_ms",
+            "default_headers",
+        },
         f"{source}.client",
     )
     max_retries = client_raw.get("max_retries", 0)
     timeout_ms = client_raw.get("timeout_ms", 2_000)
     telemetry = client_raw.get("telemetry", False)
+    cancel_after_ms = client_raw.get("cancel_after_ms")
+    default_headers = _headers(
+        client_raw.get("default_headers", {}),
+        f"{source}.client.default_headers",
+    )
     if not isinstance(max_retries, int) or isinstance(max_retries, bool) or max_retries < 0:
         raise SchemaError(f"{source}.client.max_retries must be a non-negative integer")
     if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or timeout_ms <= 0:
         raise SchemaError(f"{source}.client.timeout_ms must be a positive integer")
     if not isinstance(telemetry, bool):
         raise SchemaError(f"{source}.client.telemetry must be a boolean")
+    if cancel_after_ms is not None and (
+        not isinstance(cancel_after_ms, int)
+        or isinstance(cancel_after_ms, bool)
+        or cancel_after_ms <= 0
+    ):
+        raise SchemaError(f"{source}.client.cancel_after_ms must be a positive integer")
+    if cancel_after_ms is not None and cancel_after_ms >= timeout_ms:
+        raise SchemaError(f"{source}.client.cancel_after_ms must be less than timeout_ms")
 
     actions_raw = data.get("actions")
     if not isinstance(actions_raw, list) or not actions_raw:
@@ -204,19 +254,32 @@ def load_scenario(path: str | Path) -> Scenario:
             raise SchemaError(
                 f"{source}.actions[{index}].kind must be one of {sorted(ACTION_KINDS)}"
             )
-        allowed_action_keys = {"kind", "delay_ms"}
+        allowed_action_keys = {"kind", "delay_ms", "allow_client_disconnect"}
         if kind in {"response", "truncated_response"}:
-            allowed_action_keys.update({"status", "headers", "json", "text", "body_base64"})
+            allowed_action_keys.update(
+                {"status", "headers", "json", "text", "body_base64", "stream_text"}
+            )
+        if kind == "cross_origin_redirect":
+            allowed_action_keys.update({"status", "headers"})
+        if kind in {"response", "truncated_response"}:
+            allowed_action_keys.add("body_delay_ms")
         if kind == "truncated_response":
             allowed_action_keys.update({"missing_bytes", "send_bytes"})
         _only_keys(action, allowed_action_keys, where)
         delay_ms = action.get("delay_ms", 0)
         if not isinstance(delay_ms, int) or isinstance(delay_ms, bool) or delay_ms < 0:
             raise SchemaError(f"{source}.actions[{index}].delay_ms must be non-negative")
-        if kind in {"response", "truncated_response"}:
+        allow_client_disconnect = action.get("allow_client_disconnect", False)
+        if not isinstance(allow_client_disconnect, bool):
+            raise SchemaError(f"{where}.allow_client_disconnect must be a boolean")
+        if kind in {"response", "truncated_response", "cross_origin_redirect"}:
             status = action.get("status")
             if not isinstance(status, int) or isinstance(status, bool) or not 100 <= status <= 599:
                 raise SchemaError(f"{source}.actions[{index}].status must be 100..599")
+            if kind == "cross_origin_redirect" and not 300 <= status <= 399:
+                raise SchemaError(
+                    f"{source}.actions[{index}].status must be 300..399 for a redirect"
+                )
             _headers(action.get("headers", {}), f"{where}.headers")
             body_keys = [key for key in ("json", "text", "body_base64") if key in action]
             if len(body_keys) > 1:
@@ -225,6 +288,13 @@ def load_scenario(path: str | Path) -> Scenario:
                 )
             if "text" in action and not isinstance(action["text"], str):
                 raise SchemaError(f"{where}.text must be a string")
+            if "stream_text" in action:
+                if not isinstance(action["stream_text"], str):
+                    raise SchemaError(f"{where}.stream_text must be a string")
+                if not body_keys:
+                    raise SchemaError(
+                        f"{where}.stream_text requires a buffered response body variant"
+                    )
             if "body_base64" in action:
                 if not isinstance(action["body_base64"], str):
                     raise SchemaError(f"{where}.body_base64 must be a string")
@@ -239,6 +309,13 @@ def load_scenario(path: str | Path) -> Scenario:
                     or action[length_key] < 0
                 ):
                     raise SchemaError(f"{where}.{length_key} must be non-negative")
+            body_delay_ms = action.get("body_delay_ms", 0)
+            if (
+                not isinstance(body_delay_ms, int)
+                or isinstance(body_delay_ms, bool)
+                or body_delay_ms < 0
+            ):
+                raise SchemaError(f"{where}.body_delay_ms must be non-negative")
         actions.append(action)
 
     expect = _object(data.get("expect"), f"{source}.expect")
@@ -297,6 +374,7 @@ def load_scenario(path: str | Path) -> Scenario:
         description=description,
         requires=tuple(requires_raw),
         operation=Operation(
+            entrypoint=entrypoint,
             method=method,
             path=path_value,
             body=operation_raw.get("body"),
@@ -307,6 +385,8 @@ def load_scenario(path: str | Path) -> Scenario:
             max_retries=max_retries,
             timeout_ms=timeout_ms,
             telemetry=telemetry,
+            cancel_after_ms=cancel_after_ms,
+            default_headers=dict(default_headers),
         ),
         actions=tuple(actions),
         expect=expect,

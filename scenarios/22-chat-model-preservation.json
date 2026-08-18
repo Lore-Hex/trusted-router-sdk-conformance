@@ -1,0 +1,70 @@
+{
+  "protocol_version": 1,
+  "name": "chat-model-preservation",
+  "description": "Typed chat APIs preserve usage, tool calls, reasoning, and every choice.",
+  "requires": ["core", "model_preservation", "generated_idempotency"],
+  "operation": {
+    "entrypoint": "chat_completions",
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": [{"role": "user", "content": "tools"}]},
+    "headers": {}
+  },
+  "client": {"max_retries": 0, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {
+      "kind": "response",
+      "status": 200,
+      "json": {
+        "id": "chatcmpl-models",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "auto",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "reasoning": "tool required",
+              "tool_calls": [
+                {
+                  "id": "call-weather",
+                  "type": "function",
+                  "function": {"name": "weather", "arguments": "{\"city\":\"Athens\"}"}
+                }
+              ]
+            },
+            "finish_reason": "tool_calls"
+          },
+          {
+            "index": 1,
+            "message": {"role": "assistant", "content": "fallback"},
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12}
+      },
+      "stream_text": "data: {\"id\":\"chatcmpl-models\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"auto\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning\":\"tool required\",\"tool_calls\":[{\"index\":0,\"id\":\"call-weather\",\"type\":\"function\",\"function\":{\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\"}}]},\"finish_reason\":null},{\"index\":1,\"delta\":{\"role\":\"assistant\",\"content\":\"fall\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-models\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"auto\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"Athens\\\"}\"}}]},\"finish_reason\":\"tool_calls\"},{\"index\":1,\"delta\":{\"content\":\"back\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":7,\"total_tokens\":12}}\n\ndata: [DONE]\n\n"
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 1,
+    "value_json_subset": {
+      "id": "chatcmpl-models",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "reasoning": "tool required",
+            "tool_calls": [{"id": "call-weather", "function": {"name": "weather"}}]
+          }
+        },
+        {"index": 1, "message": {"content": "fallback"}}
+      ],
+      "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12}
+    },
+    "headers": {"idempotency-key": {"present": true}}
+  }
+}

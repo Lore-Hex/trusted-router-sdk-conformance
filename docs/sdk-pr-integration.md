@@ -16,12 +16,12 @@ Use these inputs for the current repositories:
 
 | Repository | `sdk` | `allowed_skips` |
 | --- | --- | --- |
-| `trusted-router-py` | `python` | `reserved-header-opt-out` |
-| `trusted-router-js` | `javascript` | `telemetry-retry,reserved-header-opt-out` |
+| `trusted-router-py` | `python` | `none` |
+| `trusted-router-js` | `javascript` | `none` |
 | `trusted-router-go` | `go` | `none` |
 | `trusted-router-rust` | `rust` | `none` |
 | `trusted-router-java` | `java` | `none` |
-| `trusted-router-swift` | `swift` | `retry-500` |
+| `trusted-router-swift` | `swift` | `none` |
 
 The allowlist is exact. A new unexpected skip fails, and an allowed skip that
 starts passing also fails until the obsolete exception is removed. Every new

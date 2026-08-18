@@ -15,19 +15,43 @@ SDK's public configuration and request API.
 | `TR_CONFORMANCE_PHYSICAL_ORIGIN` | TLS loopback origin used for routing |
 | `TR_CONFORMANCE_CA_CERT` | Absolute path to this server run's ephemeral CA certificate PEM |
 | `TR_CONFORMANCE_METHOD` | Request method |
+| `TR_CONFORMANCE_ENTRYPOINT` | Public SDK entry point selected by the scenario |
 | `TR_CONFORMANCE_PATH` | Relative inference path |
 | `TR_CONFORMANCE_BODY_JSON` | Compact JSON request body |
 | `TR_CONFORMANCE_HEADERS_JSON` | Compact JSON caller headers |
 | `TR_CONFORMANCE_IDEMPOTENCY_KEY` | Native per-call key, or empty |
 | `TR_CONFORMANCE_MAX_RETRIES` | Retries after the initial attempt |
-| `TR_CONFORMANCE_TIMEOUT_MS` | Per-attempt timeout |
+| `TR_CONFORMANCE_TIMEOUT_MS` | SDK request timeout in milliseconds |
+| `TR_CONFORMANCE_CANCEL_AFTER_MS` | Caller cancellation delay, or empty when cancellation is not requested |
 | `TR_CONFORMANCE_TELEMETRY` | `1` or `0` |
+| `TR_CONFORMANCE_DEFAULT_HEADERS_JSON` | Headers installed on the injected native HTTP client, used to test credential isolation |
 
 Drivers must disable regional affinity and cross-host failover for core
 scenarios, route the logical hostname to the physical socket without changing
 what the SDK uses for telemetry/credential scope, and disable lower transport
 retries where the transport exposes such a switch. That leaves exactly one
 owner of the logical retry budget: the SDK under test.
+
+Redirect and credential-boundary scenarios must exercise an SDK-owned client,
+or an injected client the SDK itself clones and constrains. A driver must not
+pre-block redirects or pre-strip headers merely to compensate for an opaque
+caller-owned transport; those language-specific injection boundaries belong in
+native SDK tests and documentation.
+
+The v1 entry points are:
+
+| Value | Required public behavior |
+| --- | --- |
+| `generic_json` | Generic buffered request API |
+| `chat_completions` | High-level collected chat completion API |
+| `chat_stream_collect` | High-level chat collector over an SSE response |
+| `responses` | High-level buffered Responses API |
+| `oauth_exchange` | Credential-free OAuth code exchange |
+
+An adapter must not reproduce SDK parsing, retry, idempotency, redirect, or
+credential policy. It selects the named public entry point and serializes the
+public result. When cancellation is requested it must use the SDK's native
+cancellation surface (context, task, future, signal, or equivalent).
 
 ## Driver-to-orchestrator result
 
@@ -63,7 +87,21 @@ The fault server currently supports:
 
 - `response`: complete HTTP/1.1 response;
 - `disconnect`: TCP reset after the request is captured, before headers; and
-- `truncated_response`: declared body length followed by a prefix and reset.
+- `truncated_response`: declared body length followed by a prefix and reset;
+- `cross_origin_redirect`: redirect to the same isolated TLS listener under
+  the distinct `localhost` origin, making any follow-up observable; and
+- `body_delay_ms` on response actions: send headers immediately, then delay
+  the body to exercise body deadlines and cancellation.
+
+A response may contain both a normal buffered body (`json`, `text`, or
+`body_base64`) and `stream_text`. The server selects `stream_text` only when
+the captured request JSON contains `"stream": true`; otherwise it sends the
+buffered variant. This lets one logical high-level scenario respect SDKs that
+natively request buffered JSON and SDKs whose collector natively requests SSE.
+
+Actions marked `allow_client_disconnect` expect the client to time out or
+cancel while the server is delaying its body; the resulting broken pipe is
+therefore not a harness error.
 
 New action kinds require a protocol-version change only when old runners
 cannot reject or safely ignore them. Additive expectation fields may remain

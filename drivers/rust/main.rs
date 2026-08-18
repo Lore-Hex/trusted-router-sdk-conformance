@@ -1,9 +1,12 @@
+use futures_util::StreamExt;
 use http::Method;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
-use trusted_router::{CallOptions, Client, Plane};
+use trusted_router::{
+    CallOptions, ChatRequest, Client, OAuthKeyExchangeRequest, Plane, ResponsesRequest,
+};
 use url::Url;
 
 struct Failure {
@@ -104,18 +107,6 @@ async fn run() -> Result<Value, Failure> {
     let ca_path = environment("CA_CERT")?;
     let ca_pem = std::fs::read(&ca_path)
         .map_err(|error| Failure::driver(format!("read conformance CA: {error}")))?;
-    let ca = reqwest::Certificate::from_pem(&ca_pem)
-        .map_err(|error| Failure::driver(format!("parse conformance CA: {error}")))?;
-    let http = reqwest::Client::builder()
-        .no_proxy()
-        .add_root_certificate(ca)
-        .resolve(logical_host, physical_address)
-        .pool_max_idle_per_host(0)
-        .redirect(reqwest::redirect::Policy::none())
-        .retry(reqwest::retry::never())
-        .http1_only()
-        .build()
-        .map_err(|error| Failure::driver(format!("build reqwest client: {error}")))?;
 
     let max_retries: usize = environment("MAX_RETRIES")?
         .parse()
@@ -133,7 +124,10 @@ async fn run() -> Result<Value, Failure> {
         _ => return Err(Failure::driver("TELEMETRY must be 0 or 1")),
     };
 
-    let client = Client::builder()
+    let default_headers: BTreeMap<String, String> =
+        serde_json::from_str(&environment("DEFAULT_HEADERS_JSON")?)
+            .map_err(|error| Failure::driver(format!("parse DEFAULT_HEADERS_JSON: {error}")))?;
+    let mut builder = Client::builder()
         .api_key("tr-conformance-key")
         .api_base_url(logical.as_str())
         .control_base_url(logical.as_str())
@@ -141,9 +135,12 @@ async fn run() -> Result<Value, Failure> {
         .max_retries(max_retries)
         .regional_failover(false)
         .telemetry(telemetry)
-        .http_client(http)
-        .build()
-        .map_err(Failure::sdk)?;
+        .root_certificate_pem(ca_pem)
+        .resolve_hostname(logical_host.to_owned(), physical_address);
+    for (name, value) in default_headers {
+        builder = builder.header(name, value);
+    }
+    let client = builder.build().map_err(Failure::sdk)?;
 
     let body: Value = serde_json::from_str(&environment("BODY_JSON")?)
         .map_err(|error| Failure::driver(format!("parse BODY_JSON: {error}")))?;
@@ -161,10 +158,154 @@ async fn run() -> Result<Value, Failure> {
         ..CallOptions::default()
     };
 
-    client
-        .request::<Value>(Plane::Inference, method, &path, Some(body), options)
-        .await
-        .map_err(Failure::sdk)
+    let entrypoint = environment("ENTRYPOINT")?;
+    let operation = execute(&client, &entrypoint, method, &path, body, options);
+    let cancel_after = environment("CANCEL_AFTER_MS")?;
+    if cancel_after.is_empty() {
+        operation.await
+    } else {
+        let cancel_after_ms: u64 = cancel_after
+            .parse()
+            .map_err(|error| Failure::driver(format!("invalid CANCEL_AFTER_MS: {error}")))?;
+        if cancel_after_ms == 0 {
+            return Err(Failure::driver("CANCEL_AFTER_MS must be positive"));
+        }
+        tokio::select! {
+            result = operation => result,
+            () = tokio::time::sleep(Duration::from_millis(cancel_after_ms)) => {
+                Err(Failure::driver("caller cancelled the SDK operation"))
+            }
+        }
+    }
+}
+
+fn object_body(body: Value, entrypoint: &str) -> Result<serde_json::Map<String, Value>, Failure> {
+    body.as_object()
+        .cloned()
+        .ok_or_else(|| Failure::driver(format!("{entrypoint} body must be a JSON object")))
+}
+
+fn chat_request(body: Value, options: CallOptions) -> Result<ChatRequest, Failure> {
+    let mut object = object_body(body, "chat")?;
+    let model = object
+        .remove("model")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let messages = object
+        .remove("messages")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    object.remove("stream");
+    Ok(ChatRequest {
+        model,
+        messages,
+        models: Vec::new(),
+        tools: Vec::new(),
+        provider: None,
+        metadata: None,
+        depth: None,
+        extra: object.into_iter().collect(),
+        call_options: options,
+    })
+}
+
+fn responses_request(body: Value, options: CallOptions) -> Result<ResponsesRequest, Failure> {
+    let mut object = object_body(body, "responses")?;
+    let model = object
+        .remove("model")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let input = object.remove("input").unwrap_or(Value::Null);
+    let instructions = object
+        .remove("instructions")
+        .and_then(|value| value.as_str().map(str::to_owned));
+    let store = object
+        .remove("store")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    object.remove("stream");
+    Ok(ResponsesRequest {
+        model,
+        input,
+        instructions,
+        models: Vec::new(),
+        tools: Vec::new(),
+        provider: None,
+        metadata: None,
+        store,
+        extra: object.into_iter().collect(),
+        call_options: options,
+    })
+}
+
+async fn execute(
+    client: &Client,
+    entrypoint: &str,
+    method: Method,
+    path: &str,
+    body: Value,
+    options: CallOptions,
+) -> Result<Value, Failure> {
+    match entrypoint {
+        "generic_json" => client
+            .request::<Value>(Plane::Inference, method, path, Some(body), options)
+            .await
+            .map_err(Failure::sdk),
+        "chat_completions" => {
+            let response = client
+                .chat_completions(chat_request(body, options)?)
+                .await
+                .map_err(Failure::sdk)?;
+            serde_json::to_value(response)
+                .map_err(|error| Failure::driver(format!("serialize chat response: {error}")))
+        }
+        "chat_stream_collect" => {
+            let mut stream = client
+                .chat_completions_stream(chat_request(body, options)?)
+                .await
+                .map_err(Failure::sdk)?;
+            let mut chunks = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                chunks.push(chunk.map_err(Failure::sdk)?);
+            }
+            Ok(Value::Array(chunks))
+        }
+        "responses" => {
+            let response = client
+                .responses(responses_request(body, options)?)
+                .await
+                .map_err(Failure::sdk)?;
+            serde_json::to_value(response)
+                .map_err(|error| Failure::driver(format!("serialize Responses result: {error}")))
+        }
+        "oauth_exchange" => {
+            let mut object = object_body(body, "oauth_exchange")?;
+            let code = object
+                .remove("code")
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            let code_verifier = object
+                .remove("code_verifier")
+                .and_then(|value| value.as_str().map(str::to_owned));
+            let code_challenge_method = object
+                .remove("code_challenge_method")
+                .and_then(|value| value.as_str().map(str::to_owned));
+            let response = client
+                .exchange_oauth_key(OAuthKeyExchangeRequest {
+                    code,
+                    code_verifier,
+                    code_challenge_method,
+                    call_options: options,
+                })
+                .await
+                .map_err(Failure::sdk)?;
+            serde_json::to_value(response)
+                .map_err(|error| Failure::driver(format!("serialize OAuth response: {error}")))
+        }
+        _ => Err(Failure::driver(format!(
+            "unsupported ENTRYPOINT {entrypoint:?}"
+        ))),
+    }
 }
 
 #[tokio::main]
