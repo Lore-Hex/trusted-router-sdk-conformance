@@ -88,7 +88,7 @@ private final class TestCATrustDelegate: NSObject, URLSessionDelegate, @unchecke
 /// api.trustedrouter.com URL, so host-scoped behavior such as telemetry is
 /// exercised by the real SDK request engine rather than reimplemented here.
 private final class LogicalOriginProtocol: URLProtocol, @unchecked Sendable {
-    private var task: URLSessionDataTask?
+    private var forwardingTask: URLSessionDataTask?
     private var forwardingSession: URLSession?
 
     override class func canInit(with request: URLRequest) -> Bool {
@@ -143,7 +143,7 @@ private final class LogicalOriginProtocol: URLProtocol, @unchecked Sendable {
             let session = URLSession(configuration: configuration)
             #endif
             forwardingSession = session
-            task = session.dataTask(with: forwarded) { [weak self] data, response, error in
+            forwardingTask = session.dataTask(with: forwarded) { [weak self] data, response, error in
                 guard let self else { return }
                 if let error {
                     self.client?.urlProtocol(self, didFailWithError: error)
@@ -187,7 +187,7 @@ private final class LogicalOriginProtocol: URLProtocol, @unchecked Sendable {
                 self.client?.urlProtocolDidFinishLoading(self)
                 self.finishForwarding()
             }
-            task?.resume()
+            forwardingTask?.resume()
         } catch {
             client?.urlProtocol(self, didFailWithError: error)
             finishForwarding()
@@ -195,14 +195,14 @@ private final class LogicalOriginProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {
-        task?.cancel()
+        forwardingTask?.cancel()
         forwardingSession?.invalidateAndCancel()
-        task = nil
+        forwardingTask = nil
         forwardingSession = nil
     }
 
     private func finishForwarding() {
-        task = nil
+        forwardingTask = nil
         forwardingSession?.finishTasksAndInvalidate()
         forwardingSession = nil
     }
