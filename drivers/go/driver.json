@@ -7,7 +7,16 @@
     "telemetry_header",
     "transport_fault",
     "reserved_header_stripping",
-    "retry_500"
+    "retry_500",
+    "stream_integrity",
+    "redirect_isolation",
+    "generated_idempotency",
+    "unsafe_retry_guard",
+    "body_timeout",
+    "caller_cancellation",
+    "credential_free_oauth",
+    "model_preservation",
+    "retry_body_fault"
   ],
   "command": ["{python}", "{repo}/drivers/go/run.py"]
 }

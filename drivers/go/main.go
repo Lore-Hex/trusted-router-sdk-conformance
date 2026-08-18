@@ -106,11 +106,16 @@ func newHTTPClient(logical, physical *url.URL, caPath string) (*http.Client, err
 			RootCAs:    roots,
 		},
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			host, _, splitErr := net.SplitHostPort(address)
+			host, port, splitErr := net.SplitHostPort(address)
 			if splitErr != nil {
 				return nil, fmt.Errorf("unexpected SDK dial address %q: %w", address, splitErr)
 			}
-			if !strings.EqualFold(host, logicalHostname) {
+			if port != physical.Port() {
+				return nil, fmt.Errorf("refusing unexpected SDK dial port %q", port)
+			}
+			if !strings.EqualFold(host, logicalHostname) &&
+				!strings.EqualFold(host, physical.Hostname()) &&
+				!strings.EqualFold(host, "localhost") {
 				return nil, fmt.Errorf("refusing unexpected SDK dial host %q", host)
 			}
 			return dialer.DialContext(ctx, network, physicalAddress)
@@ -118,10 +123,109 @@ func newHTTPClient(logical, physical *url.URL, caPath string) (*http.Client, err
 	}
 	return &http.Client{
 		Transport: transport,
+		// Deliberately allow redirects on the injected client. The SDK must
+		// clone it and install its own redirect isolation policy.
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
+			return nil
 		},
 	}, nil
+}
+
+func parseChatRequest(bodyRaw string, options trustedrouter.CallOptions) (trustedrouter.ChatRequest, error) {
+	var envelope struct {
+		Model    string           `json:"model"`
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(bodyRaw), &envelope); err != nil {
+		return trustedrouter.ChatRequest{}, fmt.Errorf("parse chat request: %w", err)
+	}
+	var extra map[string]any
+	if err := json.Unmarshal([]byte(bodyRaw), &extra); err != nil {
+		return trustedrouter.ChatRequest{}, fmt.Errorf("parse chat request extensions: %w", err)
+	}
+	delete(extra, "model")
+	delete(extra, "messages")
+	delete(extra, "stream")
+	return trustedrouter.ChatRequest{
+		Model:       envelope.Model,
+		Messages:    envelope.Messages,
+		Extra:       extra,
+		CallOptions: options,
+	}, nil
+}
+
+func parseResponsesRequest(bodyRaw string, options trustedrouter.CallOptions) (trustedrouter.ResponsesRequest, error) {
+	var envelope struct {
+		Model        string  `json:"model"`
+		Input        any     `json:"input"`
+		Instructions *string `json:"instructions"`
+	}
+	if err := json.Unmarshal([]byte(bodyRaw), &envelope); err != nil {
+		return trustedrouter.ResponsesRequest{}, fmt.Errorf("parse Responses request: %w", err)
+	}
+	var extra map[string]any
+	if err := json.Unmarshal([]byte(bodyRaw), &extra); err != nil {
+		return trustedrouter.ResponsesRequest{}, fmt.Errorf("parse Responses request extensions: %w", err)
+	}
+	delete(extra, "model")
+	delete(extra, "input")
+	delete(extra, "instructions")
+	delete(extra, "stream")
+	return trustedrouter.ResponsesRequest{
+		Model:        envelope.Model,
+		Input:        envelope.Input,
+		Instructions: envelope.Instructions,
+		Extra:        extra,
+		CallOptions:  options,
+	}, nil
+}
+
+func execute(
+	ctx context.Context,
+	client *trustedrouter.Client,
+	entrypoint string,
+	method string,
+	path string,
+	bodyRaw string,
+	options trustedrouter.CallOptions,
+) (any, error) {
+	switch entrypoint {
+	case "generic_json":
+		var value json.RawMessage
+		if err := client.Request(ctx, method, path, json.RawMessage(bodyRaw), &value, &options); err != nil {
+			return nil, err
+		}
+		return value, nil
+	case "chat_completions", "chat_stream_collect":
+		request, err := parseChatRequest(bodyRaw, options)
+		if err != nil {
+			return nil, err
+		}
+		return client.ChatCompletions(ctx, request)
+	case "responses":
+		request, err := parseResponsesRequest(bodyRaw, options)
+		if err != nil {
+			return nil, err
+		}
+		return client.Responses(ctx, request)
+	case "oauth_exchange":
+		var body struct {
+			Code                string `json:"code"`
+			CodeVerifier        string `json:"code_verifier"`
+			CodeChallengeMethod string `json:"code_challenge_method"`
+		}
+		if err := json.Unmarshal([]byte(bodyRaw), &body); err != nil {
+			return nil, fmt.Errorf("parse OAuth exchange request: %w", err)
+		}
+		return client.ExchangeOAuthKey(ctx, trustedrouter.OAuthKeyExchangeRequest{
+			Code:                body.Code,
+			CodeVerifier:        body.CodeVerifier,
+			CodeChallengeMethod: body.CodeChallengeMethod,
+			Timeout:             options.Timeout,
+		})
+	default:
+		return nil, fmt.Errorf("unsupported ENTRYPOINT %q", entrypoint)
+	}
 }
 
 func run() (any, error) {
@@ -169,6 +273,14 @@ func run() (any, error) {
 	}
 	telemetry := telemetryRaw == "1"
 	regionalFailover := false
+	defaultHeadersRaw, err := environment("DEFAULT_HEADERS_JSON")
+	if err != nil {
+		return nil, err
+	}
+	defaultHeaders := map[string]string{}
+	if err := json.Unmarshal([]byte(defaultHeadersRaw), &defaultHeaders); err != nil {
+		return nil, fmt.Errorf("parse DEFAULT_HEADERS_JSON: %w", err)
+	}
 
 	client, err := trustedrouter.NewClient(trustedrouter.Options{
 		APIKey:           "tr-conformance-key",
@@ -179,6 +291,7 @@ func run() (any, error) {
 		MaxRetries:       &maxRetries,
 		RegionalFailover: &regionalFailover,
 		Telemetry:        &telemetry,
+		Headers:          defaultHeaders,
 	})
 	if err != nil {
 		return nil, err
@@ -211,17 +324,32 @@ func run() (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	entrypoint, err := environment("ENTRYPOINT")
+	if err != nil {
+		return nil, err
+	}
+	cancelAfterRaw, err := environment("CANCEL_AFTER_MS")
+	if err != nil {
+		return nil, err
+	}
 
-	options := &trustedrouter.CallOptions{
+	options := trustedrouter.CallOptions{
 		ExtraHeaders:   headers,
 		IdempotencyKey: idempotencyKey,
 		Timeout:        &timeout,
 	}
-	var value json.RawMessage
-	if err := client.Request(context.Background(), method, path, json.RawMessage(bodyRaw), &value, options); err != nil {
-		return nil, err
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var cancelTimer *time.Timer
+	if cancelAfterRaw != "" {
+		cancelAfterMilliseconds, parseErr := strconv.ParseInt(cancelAfterRaw, 10, 64)
+		if parseErr != nil || cancelAfterMilliseconds <= 0 {
+			return nil, fmt.Errorf("CANCEL_AFTER_MS must be empty or a positive integer")
+		}
+		cancelTimer = time.AfterFunc(time.Duration(cancelAfterMilliseconds)*time.Millisecond, cancel)
+		defer cancelTimer.Stop()
 	}
-	return value, nil
+	return execute(ctx, client, entrypoint, method, path, bodyRaw, options)
 }
 
 func main() {
