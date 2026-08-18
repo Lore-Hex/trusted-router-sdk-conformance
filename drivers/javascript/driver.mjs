@@ -13,7 +13,8 @@ function env(name) {
 function emit(outcome, value = null, error = null) {
   const errorDetail = outcome === "error" ? {
     type: error?.constructor?.name ?? "UnknownError",
-    message: typeof error?.message === "string" ? error.message : String(error),
+    message: (typeof error?.message === "string" && error.message) ||
+      error?.constructor?.name || String(error),
   } : null;
   if (errorDetail !== null && Number.isInteger(error?.statusCode)) {
     errorDetail.status_code = error.statusCode;
@@ -44,21 +45,67 @@ async function main() {
     baseUrl: env("LOGICAL_BASE_URL"),
     controlBaseUrl: env("LOGICAL_BASE_URL"),
     fetchImpl,
+    headers: JSON.parse(env("DEFAULT_HEADERS_JSON")),
     maxRetries: Number(env("MAX_RETRIES")),
     regionalFailover: false,
     regionalAffinity: false,
+    telemetry: env("TELEMETRY") === "1",
   });
+
+  const body = JSON.parse(env("BODY_JSON"));
+  const extraHeaders = JSON.parse(env("HEADERS_JSON"));
   const idempotencyKey = env("IDEMPOTENCY_KEY") || null;
+  const timeout = Number(env("TIMEOUT_MS"));
+  const cancelAfter = env("CANCEL_AFTER_MS");
+  const controller = cancelAfter ? new AbortController() : null;
+
+  const execute = () => {
+    switch (env("ENTRYPOINT")) {
+      case "generic_json":
+        return client.request(env("METHOD"), env("PATH"), {
+          body,
+          extraHeaders,
+          idempotencyKey,
+          timeout,
+          signal: controller?.signal,
+        });
+      case "chat_completions":
+      case "chat_stream_collect":
+        return client.chatCompletions({
+          ...body,
+          extraHeaders,
+          idempotencyKey,
+          timeout,
+        });
+      case "responses":
+        return client.responses({
+          ...body,
+          extraHeaders,
+          idempotencyKey,
+          timeout,
+        });
+      case "oauth_exchange":
+        return client.exchangeOAuthKey({
+          code: body.code,
+          codeVerifier: body.code_verifier ?? null,
+          codeChallengeMethod: body.code_challenge_method ?? null,
+          timeout,
+        });
+      default:
+        throw new Error(`unsupported conformance entrypoint ${env("ENTRYPOINT")}`);
+    }
+  };
+
+  let cancelTimer = null;
+  if (controller !== null) {
+    cancelTimer = setTimeout(() => controller.abort(), Number(cancelAfter));
+  }
   try {
-    const value = await client.request(env("METHOD"), env("PATH"), {
-      body: JSON.parse(env("BODY_JSON")),
-      extraHeaders: JSON.parse(env("HEADERS_JSON")),
-      idempotencyKey,
-      timeout: Number(env("TIMEOUT_MS")),
-    });
-    emit("success", value);
+    emit("success", await execute());
   } catch (error) {
     emit("error", null, error);
+  } finally {
+    if (cancelTimer !== null) clearTimeout(cancelTimer);
   }
 }
 

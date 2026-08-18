@@ -2,6 +2,19 @@
   "protocol_version": 1,
   "sdk": "javascript",
   "root_name": "trusted-router-js",
-  "capabilities": ["core", "retry_500", "transport_fault"],
+  "capabilities": [
+    "core",
+    "retry_500",
+    "transport_fault",
+    "stream_integrity",
+    "generated_idempotency",
+    "redirect_isolation",
+    "unsafe_retry_guard",
+    "body_timeout",
+    "caller_cancellation",
+    "credential_free_oauth",
+    "model_preservation",
+    "retry_body_fault"
+  ],
   "command": ["node", "{repo}/drivers/javascript/driver.mjs"]
 }
