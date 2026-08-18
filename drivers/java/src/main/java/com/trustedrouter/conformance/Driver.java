@@ -6,16 +6,23 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.google.gson.JsonPrimitive;
 import com.trustedrouter.CallOptions;
 import com.trustedrouter.TrustedRouterClient;
 import com.trustedrouter.TrustedRouterOptions;
 import com.trustedrouter.errors.TrustedRouterException;
+import com.trustedrouter.models.ChatCompletion;
+import com.trustedrouter.models.ChatCompletionChunk;
+import com.trustedrouter.models.ResponseObject;
+import com.trustedrouter.oauth.OAuthToken;
+import com.trustedrouter.requests.ChatRequest;
+import com.trustedrouter.requests.ResponsesRequest;
+import com.trustedrouter.streaming.EventStream;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
-import java.io.FileInputStream;
-import java.io.InputStream;
 import java.security.KeyStore;
 import java.security.SecureRandom;
 import java.security.cert.CertificateFactory;
@@ -24,14 +31,18 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ForkJoinPool;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
 import okhttp3.Dns;
+import okhttp3.Interceptor;
 import okhttp3.OkHttpClient;
 import okhttp3.Response;
-import okhttp3.ResponseBody;
 
 /** Protocol-v1 adapter that drives the checked-out SDK's generic inference request. */
 public final class Driver {
@@ -87,11 +98,25 @@ public final class Driver {
         };
         OkHttpClient.Builder httpClientBuilder = new OkHttpClient.Builder()
                 .dns(loopbackDns)
-                // A fault must surface to the SDK's retry engine rather than be
-                // hidden by an OkHttp recovery inside one Call.
-                .retryOnConnectionFailure(false)
-                .followRedirects(false)
-                .followSslRedirects(false);
+                // Deliberately permissive. The SDK clone must disable hidden
+                // recovery and redirects; doing it in the adapter would make
+                // the isolation scenarios false positives.
+                .retryOnConnectionFailure(true)
+                .followRedirects(true)
+                .followSslRedirects(true);
+        final Map<String, String> defaultHeaders = headers(optional(
+                "TR_CONFORMANCE_DEFAULT_HEADERS_JSON", "DEFAULT_HEADERS_JSON", "{}"));
+        if (!defaultHeaders.isEmpty()) {
+            httpClientBuilder.addInterceptor(new Interceptor() {
+                @Override public Response intercept(Chain chain) throws IOException {
+                    okhttp3.Request.Builder request = chain.request().newBuilder();
+                    for (Map.Entry<String, String> header : defaultHeaders.entrySet()) {
+                        request.header(header.getKey(), header.getValue());
+                    }
+                    return chain.proceed(request.build());
+                }
+            });
+        }
         if ("https".equalsIgnoreCase(logical.getScheme())) {
             TlsConfig tls = tlsConfig(required("TR_CONFORMANCE_CA_CERT", "CA_CERT"));
             httpClientBuilder.sslSocketFactory(tls.context.getSocketFactory(), tls.trustManager);
@@ -108,6 +133,7 @@ public final class Driver {
         TrustedRouterOptions clientOptions = TrustedRouterOptions.builder()
                 .apiKey("tr-conformance-key")
                 .baseUrl(logicalBaseUrl)
+                .controlBaseUrl(logicalBaseUrl)
                 .httpClient(httpClient)
                 .timeoutMillis(timeoutMillis)
                 .maxRetries(maxRetries)
@@ -131,26 +157,121 @@ public final class Driver {
                 required("TR_CONFORMANCE_BODY_JSON", "BODY_JSON"));
         JsonElement body = parsedBody.isJsonNull() ? null : parsedBody;
 
-        try (Response response = client.rawRequest(method, path, body, call.build())) {
-            ResponseBody responseBody = response.body();
-            String text = responseBody == null ? "" : responseBody.string();
-            JsonElement value = decodedValue(text);
-            if (response.isSuccessful()) {
-                JsonObject result = envelope("success");
-                result.add("value", value);
-                result.add("error", JsonNull.INSTANCE);
-                return result;
+        String entrypoint = optional(
+                "TR_CONFORMANCE_ENTRYPOINT", "ENTRYPOINT", "generic_json");
+        JsonElement value;
+        if ("generic_json".equals(entrypoint)) {
+            value = generic(client, method, path, body, call.build());
+        } else if ("chat_completions".equals(entrypoint)) {
+            ChatCompletion completion = client.chatCompletions(
+                    chatRequest(body, call.build()));
+            value = completion.getRaw();
+        } else if ("chat_stream_collect".equals(entrypoint)) {
+            com.google.gson.JsonArray chunks = new com.google.gson.JsonArray();
+            try (EventStream<ChatCompletionChunk> stream = client.chatCompletionsChunks(
+                    chatRequest(body, call.build()))) {
+                ChatCompletionChunk chunk;
+                while ((chunk = stream.read()) != null) {
+                    chunks.add(chunk.getRaw());
+                }
             }
-            JsonObject error = new JsonObject();
-            error.addProperty("type", "http_error");
-            error.addProperty("message", "HTTP " + response.code());
-            error.addProperty("status_code", response.code());
-            error.add("body", value);
-            JsonObject result = envelope("error");
-            result.add("value", JsonNull.INSTANCE);
-            result.add("error", error);
-            return result;
+            value = chunks;
+        } else if ("responses".equals(entrypoint)) {
+            ResponseObject response = client.responses(responsesRequest(body, call.build()));
+            value = response.getRaw();
+        } else if ("oauth_exchange".equals(entrypoint)) {
+            JsonObject object = body == null || !body.isJsonObject()
+                    ? new JsonObject() : body.getAsJsonObject();
+            OAuthToken token = client.exchangeOAuthKey(
+                    stringValue(object, "code"),
+                    nullableString(object, "code_verifier"),
+                    nullableString(object, "code_challenge_method"));
+            value = token.getRaw();
+        } else {
+            throw new IllegalArgumentException("unsupported ENTRYPOINT: " + entrypoint);
         }
+        JsonObject result = envelope("success");
+        result.add("value", value == null ? JsonNull.INSTANCE : value);
+        result.add("error", JsonNull.INSTANCE);
+        return result;
+    }
+
+    private static JsonElement generic(
+            TrustedRouterClient client,
+            String method,
+            String path,
+            JsonElement body,
+            CallOptions options) throws Exception {
+        String cancelRaw = optional(
+                "TR_CONFORMANCE_CANCEL_AFTER_MS", "CANCEL_AFTER_MS", "");
+        if (cancelRaw.isEmpty()) {
+            return client.request(method, path, body, options);
+        }
+        final long cancelAfterMillis = positiveLong(cancelRaw, "CANCEL_AFTER_MS");
+        // Exclude one-time worker creation from the cancellation interval. The
+        // scenario is exercising cancellation of an in-flight body read, not
+        // cancellation while the JVM is still starting its common pool.
+        ForkJoinPool.commonPool().submit(() -> {}).join();
+        final CompletableFuture<JsonElement> future = client.async().request(
+                method, path, body, options);
+        Thread canceller = new Thread(() -> {
+            try {
+                Thread.sleep(cancelAfterMillis);
+                future.cancel(true);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }, "trusted-router-conformance-canceller");
+        canceller.setDaemon(true);
+        canceller.start();
+        try {
+            return future.get();
+        } catch (ExecutionException wrapped) {
+            Throwable cause = wrapped.getCause();
+            if (cause instanceof Exception) {
+                throw (Exception) cause;
+            }
+            throw wrapped;
+        } catch (CancellationException cancelled) {
+            throw cancelled;
+        }
+    }
+
+    private static ChatRequest chatRequest(JsonElement body, CallOptions options) {
+        ChatRequest.Builder request = ChatRequest.builder().callOptions(options);
+        if (body != null && body.isJsonObject()) {
+            for (Map.Entry<String, JsonElement> field : body.getAsJsonObject().entrySet()) {
+                if (!"stream".equals(field.getKey())) {
+                    request.parameter(field.getKey(), field.getValue());
+                }
+            }
+        }
+        return request.build();
+    }
+
+    private static ResponsesRequest responsesRequest(JsonElement body, CallOptions options) {
+        ResponsesRequest.Builder request = ResponsesRequest.builder().callOptions(options);
+        if (body != null && body.isJsonObject()) {
+            for (Map.Entry<String, JsonElement> field : body.getAsJsonObject().entrySet()) {
+                if (!"stream".equals(field.getKey())) {
+                    request.parameter(field.getKey(), field.getValue());
+                }
+            }
+        }
+        return request.build();
+    }
+
+    private static String stringValue(JsonObject object, String name) {
+        String value = nullableString(object, name);
+        if (value == null || value.isEmpty()) {
+            throw new IllegalArgumentException(name + " is required");
+        }
+        return value;
+    }
+
+    private static String nullableString(JsonObject object, String name) {
+        JsonElement value = object.get(name);
+        return value == null || value.isJsonNull() ? null : value.getAsString();
     }
 
     private static Map<String, String> headers(String json) {
@@ -167,17 +288,6 @@ public final class Driver {
             values.put(entry.getKey(), entry.getValue().getAsString());
         }
         return values;
-    }
-
-    private static JsonElement decodedValue(String text) {
-        if (text == null || text.isEmpty()) {
-            return JsonNull.INSTANCE;
-        }
-        try {
-            return JsonParser.parseString(text);
-        } catch (RuntimeException notJson) {
-            return new JsonPrimitive(text);
-        }
     }
 
     private static JsonObject exceptionResult(Throwable error) {
