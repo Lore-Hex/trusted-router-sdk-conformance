@@ -6,6 +6,7 @@
     "core",
     "retry_500",
     "telemetry_header",
+    "reserved_header_stripping",
     "transport_fault",
     "stream_integrity",
     "generated_idempotency",
