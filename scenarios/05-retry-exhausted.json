@@ -1,0 +1,26 @@
+{
+  "protocol_version": 1,
+  "name": "retry-exhausted",
+  "description": "The retry budget is exact: max_retries=2 produces three wire attempts.",
+  "requires": ["core"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {},
+    "idempotency_key": "tr-conformance-exhausted"
+  },
+  "client": {"max_retries": 2, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {"kind": "response", "status": 503, "json": {"error": {"message": "one"}}},
+    {"kind": "response", "status": 503, "json": {"error": {"message": "two"}}},
+    {"kind": "response", "status": 503, "json": {"error": {"message": "three"}}}
+  ],
+  "expect": {
+    "outcome": "error",
+    "attempts": 3,
+    "error_status": 503,
+    "same_headers": ["idempotency-key"],
+    "headers": {"idempotency-key": "tr-conformance-exhausted"}
+  }
+}

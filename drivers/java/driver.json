@@ -1,0 +1,16 @@
+{
+  "protocol_version": 1,
+  "sdk": "java",
+  "root_name": "trusted-router-java",
+  "command": [
+    "{python}",
+    "{repo}/drivers/java/run.py"
+  ],
+  "capabilities": [
+    "core",
+    "reserved_header_stripping",
+    "retry_500",
+    "telemetry_header",
+    "transport_fault"
+  ]
+}

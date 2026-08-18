@@ -1,0 +1,23 @@
+{
+  "protocol_version": 1,
+  "name": "reserved-header-opt-out",
+  "description": "A caller-forged reserved telemetry header is stripped while telemetry is disabled.",
+  "requires": ["core", "reserved_header_stripping"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {"X-TR-CLIENT": "v=1;a=0;s=0"},
+    "idempotency_key": "tr-conformance-reserved"
+  },
+  "client": {"max_retries": 0, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {"kind": "response", "status": 200, "json": {"ok": true}}
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 1,
+    "value_json_subset": {"ok": true},
+    "headers": {"x-tr-client": {"absent": true}}
+  }
+}

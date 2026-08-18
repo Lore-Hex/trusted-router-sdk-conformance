@@ -1,0 +1,30 @@
+{
+  "protocol_version": 1,
+  "name": "verdict-true",
+  "description": "x-should-retry:true forces a retry of an otherwise terminal 400.",
+  "requires": ["core"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {},
+    "idempotency_key": "tr-conformance-verdict-true"
+  },
+  "client": {"max_retries": 1, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {
+      "kind": "response",
+      "status": 400,
+      "headers": {"x-should-retry": "true"},
+      "json": {"error": {"message": "retry anyway", "type": "bad_request"}}
+    },
+    {"kind": "response", "status": 200, "json": {"ok": true}}
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 2,
+    "value_json_subset": {"ok": true},
+    "same_headers": ["idempotency-key"],
+    "headers": {"idempotency-key": "tr-conformance-verdict-true"}
+  }
+}

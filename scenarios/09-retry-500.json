@@ -1,0 +1,24 @@
+{
+  "protocol_version": 1,
+  "name": "retry-500",
+  "description": "A plain 500 retries on the same host; strict mode exposes SDKs that diverge.",
+  "requires": ["core", "retry_500"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {},
+    "idempotency_key": "tr-conformance-retry-500"
+  },
+  "client": {"max_retries": 1, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {"kind": "response", "status": 500, "json": {"error": {"message": "retry"}}},
+    {"kind": "response", "status": 200, "json": {"ok": true}}
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 2,
+    "value_json_subset": {"ok": true},
+    "same_headers": ["idempotency-key"]
+  }
+}

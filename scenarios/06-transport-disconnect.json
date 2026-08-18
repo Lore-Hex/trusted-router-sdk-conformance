@@ -1,0 +1,25 @@
+{
+  "protocol_version": 1,
+  "name": "transport-disconnect",
+  "description": "A connection reset before response headers is retried once.",
+  "requires": ["core", "transport_fault"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {},
+    "idempotency_key": "tr-conformance-disconnect"
+  },
+  "client": {"max_retries": 1, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {"kind": "disconnect"},
+    {"kind": "response", "status": 200, "json": {"ok": true}}
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 2,
+    "value_json_subset": {"ok": true},
+    "same_headers": ["idempotency-key"],
+    "headers": {"idempotency-key": "tr-conformance-disconnect"}
+  }
+}

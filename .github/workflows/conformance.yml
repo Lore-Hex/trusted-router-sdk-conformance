@@ -1,0 +1,274 @@
+name: Conformance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * *"
+  repository_dispatch:
+    types: [sdk-conformance]
+  workflow_dispatch:
+    inputs:
+      python_ref:
+        description: trusted-router-py ref
+        default: main
+        required: true
+      javascript_ref:
+        description: trusted-router-js ref
+        default: main
+        required: true
+      go_ref:
+        description: trusted-router-go ref
+        default: main
+        required: true
+      rust_ref:
+        description: trusted-router-rust ref
+        default: main
+        required: true
+      java_ref:
+        description: trusted-router-java ref
+        default: main
+        required: true
+      swift_ref:
+        description: trusted-router-swift ref
+        default: main
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # API dispatches use a caller correlation ID when supplied. API and manual
+  # dispatches otherwise use the unique Actions run ID, so unrelated runs do
+  # not cancel merely because both execute from this repository's main ref.
+  group: >-
+    conformance-${{ github.workflow }}-${{ github.event_name }}-${{
+      github.event_name == 'repository_dispatch' &&
+      (github.event.client_payload.run_id || github.run_id) ||
+      github.event_name == 'workflow_dispatch' && github.run_id ||
+      github.ref
+    }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e '.[dev]'
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest
+      - name: Smoke-test installed wheel assets
+        run: |
+          python -m pip wheel --no-deps --wheel-dir dist .
+          python -m pip install --force-reinstall dist/*.whl
+          cd "$RUNNER_TEMP"
+          tr-conformance --list
+          python -c 'from trusted_router_conformance.runner import discover_scenarios; from trusted_router_conformance.server import FaultServer; server = FaultServer(discover_scenarios()["success"]); server.__enter__(); server.__exit__(None, None, None)'
+
+  python:
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Lore-Hex/trusted-router-py
+          ref: ${{ github.event.client_payload.python_ref || inputs.python_ref || 'main' }}
+          path: sdks/trusted-router-py
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - name: Install harness runtime dependencies
+        run: python -m pip install .
+      - name: Run matrix
+        run: >-
+          PYTHONPATH=src python -m trusted_router_conformance
+          --sdk python
+          --allowed-skips reserved-header-opt-out
+          --sdk-root python=$GITHUB_WORKSPACE/sdks/trusted-router-py
+          --json-report .conformance/python.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-python
+          path: .conformance/python.json
+
+  javascript:
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Lore-Hex/trusted-router-js
+          ref: ${{ github.event.client_payload.javascript_ref || inputs.javascript_ref || 'main' }}
+          path: sdks/trusted-router-js
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install harness runtime dependencies
+        run: python -m pip install .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run matrix
+        run: >-
+          PYTHONPATH=src python -m trusted_router_conformance
+          --sdk javascript
+          --allowed-skips telemetry-retry,reserved-header-opt-out
+          --sdk-root javascript=$GITHUB_WORKSPACE/sdks/trusted-router-js
+          --json-report .conformance/javascript.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-javascript
+          path: .conformance/javascript.json
+
+  go:
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Lore-Hex/trusted-router-go
+          ref: ${{ github.event.client_payload.go_ref || inputs.go_ref || 'main' }}
+          path: sdks/trusted-router-go
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install harness runtime dependencies
+        run: python -m pip install .
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+      - name: Run matrix
+        run: >-
+          PYTHONPATH=src python -m trusted_router_conformance
+          --sdk go
+          --allowed-skips none
+          --sdk-root go=$GITHUB_WORKSPACE/sdks/trusted-router-go
+          --json-report .conformance/go.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-go
+          path: .conformance/go.json
+
+  rust:
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Lore-Hex/trusted-router-rust
+          ref: ${{ github.event.client_payload.rust_ref || inputs.rust_ref || 'main' }}
+          path: sdks/trusted-router-rust
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install harness runtime dependencies
+        run: python -m pip install .
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run matrix
+        run: >-
+          PYTHONPATH=src python -m trusted_router_conformance
+          --sdk rust
+          --allowed-skips none
+          --sdk-root rust=$GITHUB_WORKSPACE/sdks/trusted-router-rust
+          --json-report .conformance/rust.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-rust
+          path: .conformance/rust.json
+
+  java:
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Lore-Hex/trusted-router-java
+          ref: ${{ github.event.client_payload.java_ref || inputs.java_ref || 'main' }}
+          path: sdks/trusted-router-java
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install harness runtime dependencies
+        run: python -m pip install .
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Run matrix
+        run: >-
+          PYTHONPATH=src python -m trusted_router_conformance
+          --sdk java
+          --allowed-skips none
+          --sdk-root java=$GITHUB_WORKSPACE/sdks/trusted-router-java
+          --json-report .conformance/java.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-java
+          path: .conformance/java.json
+
+  swift:
+    needs: core
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Lore-Hex/trusted-router-swift
+          ref: ${{ github.event.client_payload.swift_ref || inputs.swift_ref || 'main' }}
+          path: sdks/trusted-router-swift
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install harness runtime dependencies
+        run: python -m pip install .
+      - name: Run matrix
+        run: >-
+          PYTHONPATH=src python -m trusted_router_conformance
+          --sdk swift
+          --allowed-skips retry-500
+          --sdk-root swift=$GITHUB_WORKSPACE/sdks/trusted-router-swift
+          --json-report .conformance/swift.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-swift
+          path: .conformance/swift.json

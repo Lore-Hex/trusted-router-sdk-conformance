@@ -1,0 +1,28 @@
+{
+  "protocol_version": 1,
+  "name": "verdict-false",
+  "description": "x-should-retry:false suppresses a normally retryable 503.",
+  "requires": ["core"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {},
+    "idempotency_key": "tr-conformance-verdict-false"
+  },
+  "client": {"max_retries": 2, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {
+      "kind": "response",
+      "status": 503,
+      "headers": {"x-should-retry": "false"},
+      "json": {"error": {"message": "already spent", "type": "server_error"}}
+    }
+  ],
+  "expect": {
+    "outcome": "error",
+    "attempts": 1,
+    "error_status": 503,
+    "headers": {"idempotency-key": "tr-conformance-verdict-false"}
+  }
+}

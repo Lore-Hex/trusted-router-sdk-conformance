@@ -1,0 +1,29 @@
+{
+  "protocol_version": 1,
+  "name": "retry-429",
+  "description": "A rate-limit response consumes one SDK retry and preserves request identity.",
+  "requires": ["core"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {},
+    "idempotency_key": "tr-conformance-retry-429"
+  },
+  "client": {"max_retries": 1, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {
+      "kind": "response",
+      "status": 429,
+      "json": {"error": {"message": "rate limited", "type": "rate_limit"}}
+    },
+    {"kind": "response", "status": 200, "json": {"ok": true}}
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 2,
+    "value_json_subset": {"ok": true},
+    "same_headers": ["authorization", "idempotency-key"],
+    "headers": {"idempotency-key": "tr-conformance-retry-429"}
+  }
+}

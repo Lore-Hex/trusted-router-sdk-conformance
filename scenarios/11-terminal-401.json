@@ -1,0 +1,27 @@
+{
+  "protocol_version": 1,
+  "name": "terminal-401",
+  "description": "An authentication failure is terminal even when retry budget remains.",
+  "requires": ["core"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {},
+    "idempotency_key": "tr-conformance-terminal-401"
+  },
+  "client": {"max_retries": 2, "timeout_ms": 2000, "telemetry": false},
+  "actions": [
+    {
+      "kind": "response",
+      "status": 401,
+      "json": {"error": {"message": "invalid key", "type": "authentication_error"}}
+    }
+  ],
+  "expect": {
+    "outcome": "error",
+    "attempts": 1,
+    "error_status": 401,
+    "headers": {"idempotency-key": "tr-conformance-terminal-401"}
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "protocol_version": 1,
+  "sdk": "python",
+  "root_name": "trusted-router-py",
+  "capabilities": ["core", "retry_500", "telemetry_header", "transport_fault"],
+  "command": [
+    "uv",
+    "run",
+    "--project",
+    "{sdk_root}",
+    "--frozen",
+    "--no-dev",
+    "python",
+    "{repo}/drivers/python/driver.py"
+  ]
+}

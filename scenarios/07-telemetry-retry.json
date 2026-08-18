@@ -1,0 +1,28 @@
+{
+  "protocol_version": 1,
+  "name": "telemetry-retry",
+  "description": "The second telemetry header summarizes the preceding 503 without content.",
+  "requires": ["core", "telemetry_header"],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {"model": "auto", "messages": []},
+    "headers": {},
+    "idempotency_key": "tr-conformance-telemetry"
+  },
+  "client": {"max_retries": 1, "timeout_ms": 2000, "telemetry": true},
+  "actions": [
+    {"kind": "response", "status": 503, "json": {"error": {"message": "retry"}}},
+    {"kind": "response", "status": 200, "json": {"ok": true}}
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 2,
+    "value_json_subset": {"ok": true},
+    "same_headers": ["idempotency-key"],
+    "attempt_headers": [
+      {"x-tr-client": "v=1;a=0;s=0"},
+      {"x-tr-client": {"matches": "v=1;a=1;po=http_error;pc=none;ph=apex;pm=[0-9]{1,7};sm=[0-9]{1,7};s=0;fo=0"}}
+    ]
+  }
+}

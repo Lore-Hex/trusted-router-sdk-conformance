@@ -1,0 +1,12 @@
+{
+  "protocol_version": 1,
+  "sdk": "swift",
+  "root_name": "trusted-router-swift",
+  "capabilities": [
+    "core",
+    "telemetry_header",
+    "reserved_header_stripping",
+    "transport_fault"
+  ],
+  "command": ["{python}", "{repo}/drivers/swift/run.py"]
+}

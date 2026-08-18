@@ -1,0 +1,88 @@
+name: SDK PR conformance
+
+on:
+  workflow_call:
+    inputs:
+      sdk:
+        description: Driver name (python, javascript, go, rust, java, or swift)
+        required: true
+        type: string
+      allowed_skips:
+        description: Exact scenario skip allowlist, or none
+        required: false
+        default: none
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ${{ inputs.sdk == 'swift' && 'macos-15' || 'ubuntu-latest' }}
+    steps:
+      - name: Validate inputs
+        env:
+          SDK: ${{ inputs.sdk }}
+        shell: bash
+        run: |
+          case "$SDK" in
+            python|javascript|go|rust|java|swift) ;;
+            *) echo "Unsupported SDK: $SDK" >&2; exit 2 ;;
+          esac
+      - name: Check out the harness at the reusable workflow revision
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: harness
+          persist-credentials: false
+      - name: Check out the caller SDK revision
+        uses: actions/checkout@v4
+        with:
+          path: sdk
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install harness runtime dependencies
+        working-directory: harness
+        run: python -m pip install .
+      - uses: astral-sh/setup-uv@v6
+        if: inputs.sdk == 'python'
+      - uses: actions/setup-node@v4
+        if: inputs.sdk == 'javascript'
+        with:
+          node-version: "20"
+      - uses: actions/setup-go@v5
+        if: inputs.sdk == 'go'
+        with:
+          go-version: "1.23.x"
+      - uses: dtolnay/rust-toolchain@stable
+        if: inputs.sdk == 'rust'
+      - uses: Swatinem/rust-cache@v2
+        if: inputs.sdk == 'rust'
+        with:
+          workspaces: harness
+      - uses: actions/setup-java@v4
+        if: inputs.sdk == 'java'
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        if: inputs.sdk == 'java'
+      - name: Run all current scenarios
+        working-directory: harness
+        env:
+          SDK: ${{ inputs.sdk }}
+          ALLOWED_SKIPS: ${{ inputs.allowed_skips }}
+        run: >-
+          PYTHONPATH=src python -m trusted_router_conformance
+          --sdk "$SDK"
+          --allowed-skips "$ALLOWED_SKIPS"
+          --sdk-root "$SDK=$GITHUB_WORKSPACE/sdk"
+          --json-report ".conformance/$SDK.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-${{ inputs.sdk }}
+          path: harness/.conformance/${{ inputs.sdk }}.json

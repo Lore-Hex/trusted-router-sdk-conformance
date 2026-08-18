@@ -1,0 +1,7 @@
+{
+  "protocol_version": 1,
+  "sdk": "javascript",
+  "root_name": "trusted-router-js",
+  "capabilities": ["core", "retry_500", "transport_fault"],
+  "command": ["node", "{repo}/drivers/javascript/driver.mjs"]
+}

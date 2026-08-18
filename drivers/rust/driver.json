@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "sdk": "rust",
+  "root_name": "trusted-router-rust",
+  "capabilities": [
+    "core",
+    "telemetry_header",
+    "transport_fault",
+    "reserved_header_stripping",
+    "retry_500"
+  ],
+  "command": ["{python}", "{repo}/drivers/rust/run.py"]
+}
