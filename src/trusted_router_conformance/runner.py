@@ -209,9 +209,8 @@ def _run_driver_process(
         text=True,
         **process_kwargs,
     )
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
+
+    def terminate_process_tree() -> None:
         if os.name == "nt":
             try:
                 subprocess.run(
@@ -227,6 +226,11 @@ def _run_driver_process(
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        terminate_process_tree()
         stdout, stderr = process.communicate()
         raise subprocess.TimeoutExpired(
             exc.cmd,
@@ -234,6 +238,12 @@ def _run_driver_process(
             output=stdout,
             stderr=stderr,
         ) from exc
+    except BaseException:
+        # A manual interruption must not leave a detached Gradle/Cargo/Swift
+        # process group running after the orchestrator exits.
+        terminate_process_tree()
+        process.communicate()
+        raise
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 

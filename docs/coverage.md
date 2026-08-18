@@ -17,6 +17,15 @@ All six manifests advertise the same complete capability set. The explicit
 baseline test fails if a capability disappears or if a new driver is added
 without a deliberate coverage decision.
 
+“Redirect isolation” describes the SDK-owned transport, or a supplied
+transport that the SDK can safely clone and reconfigure. Some languages expose
+an opaque injected transport whose redirect policy or terminal header mutation
+cannot be changed after construction. Callers that opt into such a transport
+remain responsible for disabling redirects and preventing late credential
+injection; each SDK documents that boundary and pins it with native tests. The
+shared redirect scenario deliberately uses the SDK-owned/reconfigurable path so
+the adapter cannot manufacture a passing result.
+
 ## Scope boundary for v0.2
 
 The original buffered generic-request core remains intact. The v0.2 scenarios

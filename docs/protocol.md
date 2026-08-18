@@ -32,6 +32,12 @@ what the SDK uses for telemetry/credential scope, and disable lower transport
 retries where the transport exposes such a switch. That leaves exactly one
 owner of the logical retry budget: the SDK under test.
 
+Redirect and credential-boundary scenarios must exercise an SDK-owned client,
+or an injected client the SDK itself clones and constrains. A driver must not
+pre-block redirects or pre-strip headers merely to compensate for an opaque
+caller-owned transport; those language-specific injection boundaries belong in
+native SDK tests and documentation.
+
 The v1 entry points are:
 
 | Value | Required public behavior |
