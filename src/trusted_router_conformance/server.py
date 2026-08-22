@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from trusted_router_conformance.schema import Scenario
 from trusted_router_conformance.tls import EphemeralTLSMaterial
@@ -21,6 +22,21 @@ from trusted_router_conformance.tls import EphemeralTLSMaterial
 MAX_HEADER_BYTES = 64 * 1024
 MAX_BODY_BYTES = 4 * 1024 * 1024
 TLS_HANDSHAKE_TIMEOUT_SECONDS = 2.0
+BEACON_PATHS = frozenset({"/v1/client-events", "/client-events"})
+BEACON_TOP_LEVEL_KEYS = frozenset(
+    {
+        "schema_version",
+        "batch_id",
+        "instance_id",
+        "seq",
+        "sent_at_ms",
+        "sdk",
+        "synthetic",
+        "dropped_since_last",
+        "events",
+        "counters",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -57,16 +73,69 @@ class RecordedRequest:
         }
 
 
+def _request_path(request: RecordedRequest) -> str:
+    return urlsplit(request.target).path
+
+
+def _is_beacon(request: RecordedRequest) -> bool:
+    return request.method == "POST" and _request_path(request) in BEACON_PATHS
+
+
+def _record_beacon(request: RecordedRequest) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        body_json = json.loads(request.body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        body_json = None
+        json_parsed = False
+    else:
+        json_parsed = True
+
+    body_object = body_json if isinstance(body_json, dict) else None
+    events = body_object.get("events") if body_object is not None else None
+    counters = body_object.get("counters") if body_object is not None else None
+    events_count = len(events) if isinstance(events, list) else 0
+    counters_count = len(counters) if isinstance(counters, list) else 0
+    beacon = {
+        "path": _request_path(request),
+        "byte_length": len(request.body),
+        "json_parsed": json_parsed,
+        "schema_version": (body_object.get("schema_version") if body_object is not None else None),
+        "events_count": events_count,
+        "counters_count": counters_count,
+        "top_level_keys_recognized": (
+            set(body_object).issubset(BEACON_TOP_LEVEL_KEYS) if body_object is not None else False
+        ),
+    }
+    response = {
+        "kind": "response",
+        "status": 202,
+        "json": {
+            "data": {
+                "accepted_events": events_count,
+                "accepted_counters": counters_count,
+                "dropped": 0,
+            },
+            "policy": {},
+        },
+    }
+    return beacon, response
+
+
 class _State:
     def __init__(self, scenario: Scenario) -> None:
         self.scenario = scenario
         self.lock = threading.Lock()
         self.requests: list[RecordedRequest] = []
+        self.beacons: list[dict[str, Any]] = []
         self.errors: list[str] = []
         self._active_disconnect_tolerant_responses = 0
 
     def record(self, request: RecordedRequest) -> dict[str, Any]:
         with self.lock:
+            if _is_beacon(request):
+                beacon, response = _record_beacon(request)
+                self.beacons.append(beacon)
+                return response
             self.requests.append(request)
             index = len(self.requests) - 1
             if index >= len(self.scenario.actions):
@@ -350,6 +419,7 @@ class FaultServer:
             return {
                 "protocol_version": 1,
                 "requests": [request.as_dict() for request in self._state.requests],
+                "beacons": [dict(beacon) for beacon in self._state.beacons],
                 "server_errors": list(self._state.errors),
             }
 

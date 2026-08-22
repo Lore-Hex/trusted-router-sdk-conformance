@@ -84,6 +84,110 @@ def test_fault_server_returns_599_after_scenario_is_exhausted() -> None:
     assert "unexpected request 2" in transcript["server_errors"][0]
 
 
+def test_beacon_between_actions_is_accepted_without_consuming_or_counting() -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "02-retry-503.json")
+    beacon_body = {
+        "schema_version": 1,
+        "batch_id": "batch-1",
+        "events": [{"type": "request"}, {"type": "retry"}],
+        "counters": [{"name": "attempts"}],
+    }
+
+    with FaultServer(scenario) as server:
+        context = _context(server.ca_cert_path)
+        statuses: list[int] = []
+        for path, body in (
+            ("/v1/chat/completions", b"{}"),
+            ("/client-events?source=test", json.dumps(beacon_body).encode()),
+            ("/v1/chat/completions", b"{}"),
+        ):
+            connection = http.client.HTTPSConnection(
+                "127.0.0.1", server.port, context=context, timeout=2
+            )
+            connection.request("POST", path, body=body)
+            response = connection.getresponse()
+            statuses.append(response.status)
+            response_body = response.read()
+            connection.close()
+            if path.startswith("/client-events"):
+                assert json.loads(response_body) == {
+                    "data": {
+                        "accepted_events": 2,
+                        "accepted_counters": 1,
+                        "dropped": 0,
+                    },
+                    "policy": {},
+                }
+        transcript = server.transcript()
+
+    assert statuses == [503, 202, 200]
+    assert len(transcript["requests"]) == 2
+    assert [request["index"] for request in transcript["requests"]] == [0, 1]
+    assert transcript["server_errors"] == []
+    assert transcript["beacons"] == [
+        {
+            "path": "/client-events",
+            "byte_length": len(json.dumps(beacon_body).encode()),
+            "json_parsed": True,
+            "schema_version": 1,
+            "events_count": 2,
+            "counters_count": 1,
+            "top_level_keys_recognized": True,
+        }
+    ]
+
+
+def test_non_json_beacon_is_accepted_with_zero_counts() -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "01-success.json")
+
+    with FaultServer(scenario) as server:
+        connection = http.client.HTTPSConnection(
+            "127.0.0.1", server.port, context=_context(server.ca_cert_path), timeout=2
+        )
+        connection.request("POST", "/v1/client-events", body=b"not-json")
+        response = connection.getresponse()
+        response_body = response.read()
+        connection.close()
+        transcript = server.transcript()
+
+    assert response.status == 202
+    assert json.loads(response_body) == {
+        "data": {"accepted_events": 0, "accepted_counters": 0, "dropped": 0},
+        "policy": {},
+    }
+    assert transcript["requests"] == []
+    assert transcript["beacons"][0]["json_parsed"] is False
+    assert transcript["beacons"][0]["events_count"] == 0
+    assert transcript["beacons"][0]["counters_count"] == 0
+    assert transcript["server_errors"] == []
+
+
+def test_beacon_after_last_action_is_not_an_unexpected_request() -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "01-success.json")
+
+    with FaultServer(scenario) as server:
+        context = _context(server.ca_cert_path)
+        statuses: list[int] = []
+        for path in ("/v1/chat/completions", "/v1/client-events"):
+            connection = http.client.HTTPSConnection(
+                "127.0.0.1", server.port, context=context, timeout=2
+            )
+            connection.request("POST", path, body=b"{}")
+            response = connection.getresponse()
+            statuses.append(response.status)
+            response.read()
+            connection.close()
+        transcript = server.transcript()
+
+    assert statuses == [200, 202]
+    assert len(transcript["requests"]) == 1
+    assert len(transcript["beacons"]) == 1
+    assert transcript["server_errors"] == []
+
+
 def test_cross_origin_redirect_points_to_same_tls_sink_and_records_followup() -> None:
     root = Path(__file__).resolve().parents[1]
     scenario = load_scenario(root / "scenarios" / "14-cross-origin-redirect.json")

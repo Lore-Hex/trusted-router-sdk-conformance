@@ -103,6 +103,15 @@ Actions marked `allow_client_disconnect` expect the client to time out or
 cancel while the server is delaying its body; the resulting broken pipe is
 therefore not a harness error.
 
+### Beacon traffic
+
+Client-telemetry `POST` requests whose path is `/v1/client-events` or
+`/client-events` are handled out of band, with any query string ignored for
+matching. The fault server answers them with `202`, records a compact summary
+in the transcript's `beacons` list, and never consumes a scenario action or
+counts the request as a wire attempt. Beacon presence, absence, and contents
+are reported for observation but do not affect the v1 oracle verdict.
+
 New action kinds require a protocol-version change only when old runners
 cannot reject or safely ignore them. Additive expectation fields may remain
 within v1 when strict schema validation gives a clear error on old runners.

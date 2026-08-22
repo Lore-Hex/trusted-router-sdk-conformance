@@ -40,6 +40,42 @@ def test_oracle_accepts_dynamic_telemetry_counters() -> None:
     assert checked.ok, checked.failures
 
 
+def test_oracle_ignores_reported_beacons_when_determining_verdict() -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "07-telemetry-retry.json")
+    transcript = {
+        "requests": [
+            _request("v=1;a=0;s=0"),
+            _request("v=1;a=1;po=http_error;pc=none;ph=apex;pm=3;sm=17;s=0;fo=0"),
+        ],
+        "beacons": [
+            {
+                "path": "/v1/client-events",
+                "byte_length": 42,
+                "json_parsed": True,
+                "schema_version": 1,
+                "events_count": 1,
+                "counters_count": 0,
+                "top_level_keys_recognized": True,
+            }
+        ],
+        "server_errors": [],
+    }
+    result = {
+        "protocol_version": 1,
+        "sdk": "python",
+        "scenario": "telemetry-retry",
+        "outcome": "success",
+        "value": {"ok": True},
+        "error": None,
+    }
+
+    checked = verify(scenario, result, transcript)
+
+    assert checked.ok, checked.failures
+    assert transcript["beacons"][0]["events_count"] == 1
+
+
 def test_oracle_reports_duplicate_and_changed_idempotency_headers() -> None:
     root = Path(__file__).resolve().parents[1]
     scenario = load_scenario(root / "scenarios" / "02-retry-503.json")
