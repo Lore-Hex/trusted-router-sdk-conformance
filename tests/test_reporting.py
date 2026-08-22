@@ -14,6 +14,7 @@ from trusted_router_conformance.reporting import (
     _probe_toolchain,
     collect_report_metadata,
 )
+from trusted_router_conformance.runner import RunResult
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -120,3 +121,52 @@ def test_cli_embeds_metadata_in_json_report(
     assert exit_code == 0
     assert report["metadata"] == {"sentinel": True}
     assert captured_roots == {"python": sdk_root.resolve()}
+
+
+def test_cli_json_report_surfaces_beacons(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sdk_root = tmp_path / "python-sdk"
+    sdk_root.mkdir()
+    report_path = tmp_path / "report.json"
+    beacon = {
+        "path": "/v1/client-events",
+        "byte_length": 2,
+        "json_parsed": True,
+        "schema_version": None,
+        "events_count": 0,
+        "counters_count": 0,
+        "top_level_keys_recognized": True,
+    }
+    run_result = RunResult(
+        sdk="python",
+        scenario="success",
+        status="pass",
+        duration_ms=1,
+        failures=(),
+        driver_result={"outcome": "success"},
+        transcript={"requests": [], "beacons": [beacon], "server_errors": []},
+        stdout="",
+        stderr="",
+    )
+    monkeypatch.setattr(
+        "trusted_router_conformance.cli.run_matrix", lambda *_args, **_kwargs: [run_result]
+    )
+    monkeypatch.setattr(
+        "trusted_router_conformance.cli.collect_report_metadata", lambda **_kwargs: {}
+    )
+
+    exit_code = main(
+        [
+            "--sdk",
+            "python",
+            "--scenario",
+            "success",
+            "--sdk-root",
+            f"python={sdk_root}",
+            "--json-report",
+            str(report_path),
+        ]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert report["results"][0]["transcript"]["beacons"] == [beacon]

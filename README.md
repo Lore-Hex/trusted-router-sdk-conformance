@@ -112,6 +112,13 @@ Failures in those metadata probes are recorded as unavailable and never make a
 conformance run fail. A missing selected SDK checkout still fails its matrix
 entries, as it should.
 
+### Beacon traffic
+
+SDK client-telemetry beacon `POST`s to `/v1/client-events` or `/client-events`
+are accepted out of band by the fault server. They appear as summaries in each
+result transcript's `beacons` list, but do not consume scenario actions, count
+as wire attempts, or affect the conformance verdict.
+
 ## Development
 
 ```bash
