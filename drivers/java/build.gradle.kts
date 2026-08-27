@@ -20,7 +20,7 @@ java {
 }
 
 tasks.withType<JavaCompile>().configureEach {
-    options.release.set(8)
+    options.release.set(17)
     options.encoding = "UTF-8"
 }
 
