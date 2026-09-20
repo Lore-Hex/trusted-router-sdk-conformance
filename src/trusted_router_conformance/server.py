@@ -163,11 +163,17 @@ class _State:
             return self._active_disconnect_tolerant_responses > 0
 
 
+class _EmptyConnection(ConnectionError):
+    """A peer closed without sending any HTTP request bytes."""
+
+
 def _read_request(sock: socket.socket, index: int) -> RecordedRequest:
     buffer = bytearray()
     while b"\r\n\r\n" not in buffer:
         chunk = sock.recv(4096)
         if not chunk:
+            if not buffer:
+                raise _EmptyConnection("peer closed without sending request bytes")
             raise ConnectionError("peer closed before request headers")
         buffer.extend(chunk)
         if len(buffer) > MAX_HEADER_BYTES:
@@ -313,6 +319,8 @@ class _Handler(socketserver.BaseRequestHandler):
                 redirect_location=redirect_location,
             )
         except (ConnectionError, OSError, ValueError) as exc:
+            if isinstance(exc, _EmptyConnection):
+                return
             # Some clients speculatively open another pooled connection and reset
             # it when aborting the in-flight body read. That auxiliary handler has
             # no action of its own, so suppress it only while an explicitly
