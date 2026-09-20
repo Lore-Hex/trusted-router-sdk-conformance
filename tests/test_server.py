@@ -17,8 +17,9 @@ from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
+from trusted_router_conformance.oracle import verify
 from trusted_router_conformance.schema import load_scenario
-from trusted_router_conformance.server import FaultServer
+from trusted_router_conformance.server import FaultServer, _Handler
 
 
 def _context(ca_cert_path: Path) -> ssl.SSLContext:
@@ -34,6 +35,84 @@ def _handshake(
     with socket.create_connection(("127.0.0.1", port), timeout=2) as connection:
         with context.wrap_socket(connection, server_hostname=server_hostname):
             pass
+
+
+@pytest.fixture
+def handler_finished(monkeypatch: pytest.MonkeyPatch) -> threading.Event:
+    finished = threading.Event()
+    original_handle = _Handler.handle
+
+    def handle(handler: _Handler) -> None:
+        try:
+            original_handle(handler)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(_Handler, "handle", handle)
+    return finished
+
+
+def test_empty_connection_does_not_fail_scenario(handler_finished: threading.Event) -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "01-success.json")
+    with FaultServer(scenario) as server:
+        context = _context(server.ca_cert_path)
+        # Complete TLS, then close without sending any HTTP request bytes.
+        _handshake(server.port, context, server_hostname="127.0.0.1")
+        assert handler_finished.wait(timeout=2), "empty connection handler did not finish"
+        assert server.transcript()["requests"] == []
+
+        connection = http.client.HTTPSConnection(
+            "127.0.0.1", server.port, context=context, timeout=2
+        )
+        connection.request(
+            scenario.operation.method,
+            f"/v1{scenario.operation.path}",
+            body=json.dumps(scenario.operation.body),
+            headers={
+                **scenario.operation.headers,
+                "authorization": "Bearer tr-conformance-key",
+                "content-type": "application/json",
+                "idempotency-key": scenario.operation.idempotency_key,
+                "user-agent": "conformance-test",
+            },
+        )
+        response = connection.getresponse()
+        assert response.status == 200
+        value = json.loads(response.read())
+        connection.close()
+        transcript = server.transcript()
+
+    assert transcript["server_errors"] == []
+    checked = verify(
+        scenario,
+        {
+            "protocol_version": 1,
+            "scenario": scenario.name,
+            "outcome": "success",
+            "value": value,
+            "error": None,
+        },
+        transcript,
+    )
+    assert checked.ok, checked.failures
+
+
+def test_partial_header_connection_records_error(handler_finished: threading.Event) -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "01-success.json")
+    with FaultServer(scenario) as server:
+        context = _context(server.ca_cert_path)
+        with socket.create_connection(("127.0.0.1", server.port), timeout=2) as connection:
+            with context.wrap_socket(connection, server_hostname="127.0.0.1") as tls:
+                tls.sendall(b"POST /v1/chat/completions HTTP/1.")
+        assert handler_finished.wait(timeout=2), "partial header handler did not finish"
+        transcript = server.transcript()
+
+    assert transcript["requests"] == []
+    assert transcript["server_errors"] == [
+        "server connection error: ConnectionError: peer closed before request headers"
+    ]
 
 
 def test_tls_fault_server_replays_actions_and_records_wire_request() -> None:
