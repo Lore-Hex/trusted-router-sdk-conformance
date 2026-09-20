@@ -126,6 +126,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Install and build JavaScript SDK
+        working-directory: sdks/trusted-router-js
+        # Consume the built package like a consumer; older revisions have no lockfile/build.
+        run: |
+          npm ci || npm install
+          npm run build --if-present
       - name: Run matrix
         run: >-
           PYTHONPATH=src python -m trusted_router_conformance
