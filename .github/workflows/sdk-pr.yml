@@ -53,6 +53,13 @@ jobs:
         if: inputs.sdk == 'javascript'
         with:
           node-version: "20"
+      - name: Install and build JavaScript SDK
+        if: inputs.sdk == 'javascript'
+        working-directory: sdk
+        # Consume the built package like a consumer; older revisions have no lockfile/build.
+        run: |
+          npm ci || npm install
+          npm run build --if-present
       - uses: actions/setup-go@v5
         if: inputs.sdk == 'go'
         with:

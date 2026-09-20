@@ -2,6 +2,7 @@
 /** Black-box adapter for the checked-out JavaScript SDK. */
 
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 function env(name) {
@@ -30,7 +31,23 @@ function emit(outcome, value = null, error = null) {
 }
 
 async function main() {
-  const moduleUrl = pathToFileURL(path.join(env("SDK_ROOT"), "src", "index.js"));
+  const sdkRoot = env("SDK_ROOT");
+  const packagePath = path.join(sdkRoot, "package.json");
+  const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+  const rootExport = packageJson.exports?.["."];
+  const entry = [
+    typeof rootExport === "string" ? rootExport : undefined,
+    rootExport?.import,
+    rootExport?.default,
+    packageJson.main,
+  ].find((value) => typeof value === "string" && value.length > 0);
+  if (entry === undefined) {
+    throw new Error(
+      `Cannot resolve SDK entry from ${packagePath}: checked exports["."] ` +
+      `(string, "import", "default") and "main"; expected a non-empty string`,
+    );
+  }
+  const moduleUrl = pathToFileURL(path.resolve(sdkRoot, entry));
   const { TrustedRouter } = await import(moduleUrl.href);
   const physical = new URL(env("PHYSICAL_ORIGIN"));
   const fetchImpl = async (input, init) => {
