@@ -1,0 +1,44 @@
+{
+  "protocol_version": 1,
+  "name": "failover-verdict-false",
+  "description": "An explicit unsafe-to-retry verdict forbids both retries and host movement.",
+  "requires": [
+    "regional_failover",
+    "unsafe_retry_guard"
+  ],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {
+      "model": "test/model"
+    },
+    "idempotency_key": "tr-failover-veto"
+  },
+  "client": {
+    "endpoint": "default",
+    "regional_failover": true,
+    "max_retries": 2
+  },
+  "actions": [
+    {
+      "kind": "response",
+      "status": 503,
+      "headers": {
+        "x-should-retry": "false"
+      },
+      "json": {
+        "error": {
+          "message": "do not replay"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "outcome": "error",
+    "error_status": 503,
+    "attempts": 1,
+    "attempt_hosts": [
+      "api.trustedrouter.com"
+    ]
+  }
+}

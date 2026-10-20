@@ -1,0 +1,54 @@
+{
+  "protocol_version": 1,
+  "name": "failover-disconnect",
+  "description": "A post-send connection reset can move an idempotent request to the next authority without changing its key.",
+  "requires": [
+    "regional_failover",
+    "transport_fault"
+  ],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {
+      "model": "test/model",
+      "messages": []
+    },
+    "idempotency_key": "tr-failover-disconnect"
+  },
+  "client": {
+    "endpoint": "default",
+    "regional_failover": true,
+    "max_retries": 1
+  },
+  "actions": [
+    {
+      "kind": "disconnect"
+    },
+    {
+      "kind": "response",
+      "status": 200,
+      "json": {
+        "ok": true
+      }
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 2,
+    "attempt_hosts": [
+      "api.trustedrouter.com",
+      "api.allyrouter.com"
+    ],
+    "same_headers": [
+      "authorization",
+      "idempotency-key"
+    ],
+    "body_json_subset": {
+      "model": "test/model",
+      "messages": []
+    },
+    "value_json_subset": {
+      "ok": true
+    }
+  }
+}

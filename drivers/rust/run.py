@@ -24,6 +24,7 @@ rust-version = "1.88"
 publish = false
 
 [dependencies]
+base64 = "0.22"
 futures-util = "0.3.31"
 http = "1.3.1"
 serde_json = "1.0.140"

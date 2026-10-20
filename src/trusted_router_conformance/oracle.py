@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 from trusted_router_conformance.schema import Scenario
 
@@ -135,6 +136,17 @@ def verify(
 
     for index, request in enumerate(requests):
         where = f"attempt {index}"
+        expected_hosts = scenario.expect.get("attempt_hosts")
+        if expected_hosts is not None and index < len(expected_hosts):
+            authority = _one(request.get("headers", {}), "host", where, failures)
+            try:
+                host = urlsplit("//" + (authority or "")).hostname
+            except ValueError:
+                host = None
+            if host != expected_hosts[index]:
+                failures.append(
+                    f"{where}: destination host expected {expected_hosts[index]!r}, got {host!r}"
+                )
         if request.get("method") != scenario.operation.method:
             failures.append(
                 f"{where}: method expected {scenario.operation.method}, "

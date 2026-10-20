@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "name": "attestation-invalid-signature",
+  "description": "The public verifier rejects a corrupted RS256 signature.",
+  "requires": [
+    "attestation_validation"
+  ],
+  "operation": {
+    "entrypoint": "attestation_verify",
+    "method": "GET",
+    "path": "/attestation"
+  },
+  "attestation_case": "invalid-signature",
+  "actions": [],
+  "expect": {
+    "outcome": "success",
+    "attempts": 0,
+    "value_json_subset": {
+      "verified": false
+    }
+  }
+}

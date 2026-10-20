@@ -25,6 +25,10 @@ SDK's public configuration and request API.
 | `TR_CONFORMANCE_CANCEL_AFTER_MS` | Caller cancellation delay, or empty when cancellation is not requested |
 | `TR_CONFORMANCE_TELEMETRY` | `1` or `0` |
 | `TR_CONFORMANCE_DEFAULT_HEADERS_JSON` | Headers installed on the injected native HTTP client, used to test credential isolation |
+| `TR_CONFORMANCE_REGIONAL_FAILOVER` | `1` to enable native failover, otherwise `0` |
+| `TR_CONFORMANCE_ENDPOINT` | `isolated`, `default`, or `regional_pin` |
+| `TR_CONFORMANCE_ALLOWED_HOSTS_JSON` | Fixed logical API authorities mapped to the loopback listener |
+| `TR_CONFORMANCE_ATTESTATION_JSON` | For verifier cases only: fresh public JWT/JWKS, nonce, image pin, audience, and base64 TLS certificate DER |
 
 Drivers must disable regional affinity and cross-host failover for core
 scenarios, route the logical hostname to the physical socket without changing
@@ -47,11 +51,24 @@ The v1 entry points are:
 | `chat_stream_collect` | High-level chat collector over an SSE response |
 | `responses` | High-level buffered Responses API |
 | `oauth_exchange` | Credential-free OAuth code exchange |
+| `attestation_verify` | Public cryptographic gateway verifier with caller-supplied evidence and policy |
 
 An adapter must not reproduce SDK parsing, retry, idempotency, redirect, or
 credential policy. It selects the named public entry point and serializes the
 public result. When cancellation is requested it must use the SDK's native
 cancellation surface (context, task, future, signal, or equivalent).
+
+Failover cases use the SDK's default endpoint configuration, preserving its
+normal alternate-host selection. Explicit regional pins use the named region
+instead. Adapters map sockets, not retry decisions, and preserve the original
+Host in the wire transcript. `expect.attempt_hosts` asserts every destination.
+
+Attestation cases declare `attestation_case`, have no HTTP actions and expect
+zero requests. The adapter returns `{"verified": true}` when verification
+succeeds and `{"verified": false}` only for the SDK's typed verification error.
+Both are normal successful *driver executions*. Unexpected errors remain
+driver errors. The fixture's signing key is freshly generated, never serialized
+or passed to a driver. The public certificate is this run's TLS leaf.
 
 ## Driver-to-orchestrator result
 
@@ -102,6 +119,13 @@ natively request buffered JSON and SDKs whose collector natively requests SSE.
 Actions marked `allow_client_disconnect` expect the client to time out or
 cancel while the server is delaying its body; the resulting broken pipe is
 therefore not a harness error.
+
+The transcript records pre-HTTP TLS EOFs in `tls_handshake_aborts`. A transport
+can open and cancel a speculative pooled connection without making a request.
+These do not consume actions or count as HTTP attempts. Other TLS errors,
+including certificate-rejection alerts, remain `server_errors`; partially sent
+HTTP requests remain errors too. Exact request counts and success/error
+verdicts are still enforced.
 
 ### Beacon traffic
 

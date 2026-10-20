@@ -16,7 +16,9 @@
     "caller_cancellation",
     "credential_free_oauth",
     "model_preservation",
-    "retry_body_fault"
+    "retry_body_fault",
+    "attestation_validation",
+    "regional_failover"
   ],
   "command": [
     "uv",
@@ -25,6 +27,8 @@
     "{sdk_root}",
     "--frozen",
     "--no-dev",
+    "--extra",
+    "attestation",
     "python",
     "{repo}/drivers/python/driver.py"
   ]

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import dataclasses
 import json
 import os
@@ -60,6 +61,31 @@ async def _main() -> None:
     from trustedrouter import AsyncTrustedRouter
     from trustedrouter.oauth import exchange_oauth_key_async
 
+    if _env("ENTRYPOINT") == "attestation_verify":
+        from trustedrouter.attestation import (
+            AttestationPolicy,
+            AttestationVerificationError,
+            verify_gateway_attestation,
+        )
+
+        fixture = json.loads(_env("ATTESTATION_JSON"))
+        try:
+            verify_gateway_attestation(
+                fixture["document"].encode(),
+                policy=AttestationPolicy(
+                    gcp_audience=fixture["audience"],
+                    expected_image_digest=fixture["image_digest"],
+                ),
+                nonce_hex=fixture["nonce_hex"],
+                tls_cert_der=base64.b64decode(fixture["certificate_der_base64"]),
+                jwks=fixture["jwks"],
+            )
+        except AttestationVerificationError:
+            _emit("success", value={"verified": False})
+        else:
+            _emit("success", value={"verified": True})
+        return
+
     physical = urlsplit(_env("PHYSICAL_ORIGIN"))
     if physical.hostname is None or physical.port is None:
         raise RuntimeError("physical origin must contain a host and port")
@@ -69,6 +95,12 @@ async def _main() -> None:
             self._inner = httpx.AsyncHTTPTransport(retries=0, verify=_env("CA_CERT"))
 
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            if request.url.host not in {
+                *json.loads(_env("ALLOWED_HOSTS_JSON")),
+                "localhost",
+                "127.0.0.1",
+            }:
+                raise RuntimeError("refusing unexpected conformance hostname")
             rewritten = request.url.copy_with(
                 scheme=physical.scheme,
                 host=physical.hostname,
@@ -105,7 +137,7 @@ async def _main() -> None:
         control_base_url=_env("LOGICAL_BASE_URL"),
         client=http_client,
         max_retries=int(_env("MAX_RETRIES")),
-        regional_failover=False,
+        regional_failover=_env("REGIONAL_FAILOVER") == "1",
         regional_affinity=False,
         telemetry=_env("TELEMETRY") == "1",
         _telemetry_sink=NullTelemetrySink(),

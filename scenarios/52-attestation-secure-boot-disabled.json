@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "name": "attestation-secure-boot-disabled",
+  "description": "Production verification refuses evidence without secure boot.",
+  "requires": [
+    "attestation_validation"
+  ],
+  "operation": {
+    "entrypoint": "attestation_verify",
+    "method": "GET",
+    "path": "/attestation"
+  },
+  "attestation_case": "secure-boot-disabled",
+  "actions": [],
+  "expect": {
+    "outcome": "success",
+    "attempts": 0,
+    "value_json_subset": {
+      "verified": false
+    }
+  }
+}

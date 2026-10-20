@@ -130,3 +130,25 @@ def test_stream_response_variant_requires_buffered_variant(tmp_path: Path) -> No
     path.write_text(json.dumps(value), encoding="utf-8")
     with pytest.raises(SchemaError, match="requires a buffered response body variant"):
         load_scenario(path)
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"actions": [], "expect": {"outcome": "success", "attempts": 0}}, "actions"),
+        ({"attestation_case": "valid"}, "attestation"),
+        ({"client": {"regional_failover": "true"}}, "regional_failover"),
+        ({"client": {"endpoint": "https://external.invalid"}}, "endpoint"),
+        ({"expect": {"outcome": "success", "attempts": 1, "attempt_hosts": []}}, "attempt_hosts"),
+        (
+            {"expect": {"outcome": "success", "attempts": 1, "attempt_hosts": ["https://x"]}},
+            "attempt_hosts",
+        ),
+    ],
+)
+def test_new_fields_reject_invalid_configuration(tmp_path: Path, change: dict, match: str) -> None:
+    value = {**_valid_scenario(), **change}
+    path = tmp_path / "invalid.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(SchemaError, match=match):
+        load_scenario(path)

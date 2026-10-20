@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "name": "attestation-missing-expiry",
+  "description": "A signature without a bounded expiry is not accepted.",
+  "requires": [
+    "attestation_validation"
+  ],
+  "operation": {
+    "entrypoint": "attestation_verify",
+    "method": "GET",
+    "path": "/attestation"
+  },
+  "attestation_case": "missing-expiry",
+  "actions": [],
+  "expect": {
+    "outcome": "success",
+    "attempts": 0,
+    "value_json_subset": {
+      "verified": false
+    }
+  }
+}

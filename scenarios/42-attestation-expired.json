@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "name": "attestation-expired",
+  "description": "The public verifier rejects expired signed evidence.",
+  "requires": [
+    "attestation_validation"
+  ],
+  "operation": {
+    "entrypoint": "attestation_verify",
+    "method": "GET",
+    "path": "/attestation"
+  },
+  "attestation_case": "expired",
+  "actions": [],
+  "expect": {
+    "outcome": "success",
+    "attempts": 0,
+    "value_json_subset": {
+      "verified": false
+    }
+  }
+}

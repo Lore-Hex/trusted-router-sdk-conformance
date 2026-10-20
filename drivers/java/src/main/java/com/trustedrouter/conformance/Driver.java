@@ -10,6 +10,10 @@ import com.trustedrouter.CallOptions;
 import com.trustedrouter.TrustedRouterClient;
 import com.trustedrouter.TrustedRouterOptions;
 import com.trustedrouter.errors.TrustedRouterException;
+import com.trustedrouter.attestation.AttestationPolicy;
+import com.trustedrouter.attestation.AttestationVerificationOptions;
+import com.trustedrouter.attestation.AttestationVerificationException;
+import com.trustedrouter.attestation.AttestationVerifier;
 import com.trustedrouter.models.ChatCompletion;
 import com.trustedrouter.models.ChatCompletionChunk;
 import com.trustedrouter.models.ResponseObject;
@@ -28,6 +32,10 @@ import java.security.SecureRandom;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Collections;
+import java.util.Base64;
+import java.util.HashSet;
+import java.util.Set;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,6 +75,28 @@ public final class Driver {
     }
 
     private static JsonObject execute() throws Exception {
+        if ("attestation_verify".equals(System.getenv("TR_CONFORMANCE_ENTRYPOINT"))) {
+            JsonObject fixture = JsonParser.parseString(
+                    System.getenv("TR_CONFORMANCE_ATTESTATION_JSON")).getAsJsonObject();
+            JsonObject value = new JsonObject();
+            try {
+                AttestationVerifier.verify(
+                    stringValue(fixture, "document").getBytes(StandardCharsets.UTF_8),
+                    AttestationVerificationOptions.builder(AttestationPolicy.builder()
+                        .audience(stringValue(fixture, "audience"))
+                        .expectedImageDigest(nullableString(fixture, "image_digest")).build())
+                        .nonceHex(stringValue(fixture, "nonce_hex"))
+                        .tlsCertificateDer(Base64.getDecoder().decode(stringValue(fixture, "certificate_der_base64")))
+                        .jwks(fixture.getAsJsonObject("jwks")).build());
+                value.addProperty("verified", true);
+            } catch (AttestationVerificationException rejected) {
+                value.addProperty("verified", false);
+            }
+            JsonObject result = envelope("success");
+            result.add("value", value);
+            result.add("error", JsonNull.INSTANCE);
+            return result;
+        }
         final String logicalBaseUrl = required(
                 "TR_CONFORMANCE_LOGICAL_BASE_URL", "LOGICAL_BASE_URL");
         final String physicalOrigin = required(
@@ -76,28 +106,40 @@ public final class Driver {
         if (logical.getHost() == null || physical.getHost() == null) {
             throw new IllegalArgumentException("logical and physical URLs must have hosts");
         }
-        if (logical.getPort() != physical.getPort()) {
-            throw new IllegalArgumentException(
-                    "the DNS adapter requires logical and physical origins to use the same port");
-        }
         if (!logical.getScheme().equalsIgnoreCase(physical.getScheme())) {
             throw new IllegalArgumentException(
                     "logical and physical origins must use the same scheme");
         }
 
         final String logicalHost = logical.getHost();
+        final Set<String> allowedHosts = new HashSet<String>();
+        for (JsonElement host : JsonParser.parseString(
+                System.getenv("TR_CONFORMANCE_ALLOWED_HOSTS_JSON")).getAsJsonArray()) {
+            allowedHosts.add(host.getAsString());
+        }
+        allowedHosts.add(logicalHost);
+        allowedHosts.add("localhost");
+        allowedHosts.add("127.0.0.1");
         final InetAddress physicalAddress = InetAddress.getByName(physical.getHost());
         Dns loopbackDns = new Dns() {
             @Override
             public List<InetAddress> lookup(String hostname) throws UnknownHostException {
-                if (logicalHost.equalsIgnoreCase(hostname)) {
+                if (allowedHosts.contains(hostname.toLowerCase(java.util.Locale.ROOT))) {
                     return Collections.singletonList(physicalAddress);
                 }
-                return Dns.SYSTEM.lookup(hostname);
+                throw new UnknownHostException("refusing unexpected conformance hostname");
             }
         };
         OkHttpClient.Builder httpClientBuilder = new OkHttpClient.Builder()
                 .dns(loopbackDns)
+                .addInterceptor(chain -> {
+                    okhttp3.HttpUrl url = chain.request().url();
+                    if (!allowedHosts.contains(url.host())) {
+                        throw new IOException("refusing unexpected conformance hostname");
+                    }
+                    return chain.proceed(chain.request().newBuilder()
+                        .url(url.newBuilder().port(physical.getPort()).build()).build());
+                })
                 // Deliberately permissive. The SDK clone must disable hidden
                 // recovery and redirects; doing it in the adapter would make
                 // the isolation scenarios false positives.
@@ -137,7 +179,7 @@ public final class Driver {
                 .httpClient(httpClient)
                 .timeoutMillis(timeoutMillis)
                 .maxRetries(maxRetries)
-                .regionalFailover(false)
+                .regionalFailover("1".equals(System.getenv("TR_CONFORMANCE_REGIONAL_FAILOVER")))
                 .telemetry(Boolean.valueOf(telemetry))
                 .build();
         TrustedRouterClient client = new TrustedRouterClient(clientOptions);

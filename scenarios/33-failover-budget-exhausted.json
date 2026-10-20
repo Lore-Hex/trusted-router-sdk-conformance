@@ -1,0 +1,65 @@
+{
+  "protocol_version": 1,
+  "name": "failover-budget-exhausted",
+  "description": "Host changes do not reset the logical retry budget.",
+  "requires": [
+    "regional_failover"
+  ],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {
+      "model": "test/model"
+    },
+    "idempotency_key": "tr-failover-budget"
+  },
+  "client": {
+    "endpoint": "default",
+    "regional_failover": true,
+    "max_retries": 2,
+    "timeout_ms": 5000
+  },
+  "actions": [
+    {
+      "kind": "response",
+      "status": 503,
+      "json": {
+        "error": {
+          "message": "unavailable"
+        }
+      }
+    },
+    {
+      "kind": "response",
+      "status": 503,
+      "json": {
+        "error": {
+          "message": "unavailable"
+        }
+      }
+    },
+    {
+      "kind": "response",
+      "status": 503,
+      "json": {
+        "error": {
+          "message": "unavailable"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "outcome": "error",
+    "error_status": 503,
+    "attempts": 3,
+    "attempt_hosts": [
+      "api.trustedrouter.com",
+      "api.allyrouter.com",
+      "api.uptimerouter.com"
+    ],
+    "same_headers": [
+      "authorization",
+      "idempotency-key"
+    ]
+  }
+}

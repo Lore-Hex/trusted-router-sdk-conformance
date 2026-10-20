@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+
 from trusted_router_conformance.schema import Scenario
 from trusted_router_conformance.tls import EphemeralTLSMaterial
 
@@ -127,6 +130,7 @@ class _State:
         self.lock = threading.Lock()
         self.requests: list[RecordedRequest] = []
         self.beacons: list[dict[str, Any]] = []
+        self.tls_handshake_aborts = 0
         self.errors: list[str] = []
         self._active_disconnect_tolerant_responses = 0
 
@@ -360,6 +364,12 @@ class _ThreadingServer(socketserver.ThreadingTCPServer):
             failed_request = tls_request if tls_request is not None else request
             failed_request.close()
             state: _State = self.state  # type: ignore[attr-defined]
+            if isinstance(exc, ssl.SSLEOFError):
+                # Pool cancellation can close a speculative socket before HTTP.
+                # Keep it observable, but do not count it as an attempted request.
+                with state.lock:
+                    state.tls_handshake_aborts += 1
+                return
             if state.has_active_disconnect_tolerant_response():
                 return
             with state.lock:
@@ -400,7 +410,18 @@ class FaultServer:
 
     @property
     def logical_base_url(self) -> str:
+        if self._state.scenario.client.endpoint == "default":
+            return "https://api.trustedrouter.com/v1"
+        if self._state.scenario.client.endpoint == "regional_pin":
+            return "https://api-us-central1.quillrouter.com/v1"
         return f"https://api.trustedrouter.com:{self.port}/v1"
+
+    @property
+    def certificate_der(self) -> bytes:
+        certificate = x509.load_pem_x509_certificate(
+            self._tls_material.server_cert_path.read_bytes()
+        )
+        return certificate.public_bytes(serialization.Encoding.DER)
 
     @property
     def ca_cert_path(self) -> Path:
@@ -428,6 +449,7 @@ class FaultServer:
                 "protocol_version": 1,
                 "requests": [request.as_dict() for request in self._state.requests],
                 "beacons": [dict(beacon) for beacon in self._state.beacons],
+                "tls_handshake_aborts": self._state.tls_handshake_aborts,
                 "server_errors": list(self._state.errors),
             }
 
