@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "name": "attestation-missing-image-pin",
+  "description": "The verifier refuses a policy that pins no workload image.",
+  "requires": [
+    "attestation_validation"
+  ],
+  "operation": {
+    "entrypoint": "attestation_verify",
+    "method": "GET",
+    "path": "/attestation"
+  },
+  "attestation_case": "missing-image-pin",
+  "actions": [],
+  "expect": {
+    "outcome": "success",
+    "attempts": 0,
+    "value_json_subset": {
+      "verified": false
+    }
+  }
+}

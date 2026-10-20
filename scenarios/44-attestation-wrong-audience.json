@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "name": "attestation-wrong-audience",
+  "description": "The public verifier rejects evidence for another audience.",
+  "requires": [
+    "attestation_validation"
+  ],
+  "operation": {
+    "entrypoint": "attestation_verify",
+    "method": "GET",
+    "path": "/attestation"
+  },
+  "attestation_case": "wrong-audience",
+  "actions": [],
+  "expect": {
+    "outcome": "success",
+    "attempts": 0,
+    "value_json_subset": {
+      "verified": false
+    }
+  }
+}

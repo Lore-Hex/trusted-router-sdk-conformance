@@ -1,3 +1,4 @@
+use base64::Engine;
 use futures_util::StreamExt;
 use http::Method;
 use serde_json::{json, Value};
@@ -78,7 +79,10 @@ fn parse_url(name: &str) -> Result<Url, Failure> {
     let value = environment(name)?;
     let parsed =
         Url::parse(&value).map_err(|error| Failure::driver(format!("invalid {name}: {error}")))?;
-    if parsed.scheme() != "https" || parsed.host_str().is_none() || parsed.port().is_none() {
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || (name == "PHYSICAL_ORIGIN" && parsed.port().is_none())
+    {
         return Err(Failure::driver(format!(
             "{name} must be an https URL with an explicit port"
         )));
@@ -87,6 +91,40 @@ fn parse_url(name: &str) -> Result<Url, Failure> {
 }
 
 async fn run() -> Result<Value, Failure> {
+    if environment("ENTRYPOINT")? == "attestation_verify" {
+        let fixture: Value = serde_json::from_str(&environment("ATTESTATION_JSON")?)
+            .map_err(|e| Failure::driver(e.to_string()))?;
+        let text = |key: &str| -> Result<&str, Failure> {
+            fixture[key]
+                .as_str()
+                .ok_or_else(|| Failure::driver(format!("missing fixture {key}")))
+        };
+        let certificate = base64::engine::general_purpose::STANDARD
+            .decode(text("certificate_der_base64")?)
+            .map_err(|e| Failure::driver(e.to_string()))?;
+        let verdict = trusted_router::verify_gateway_attestation(
+            text("document")?.as_bytes(),
+            trusted_router::AttestationVerificationOptions {
+                policy: trusted_router::AttestationPolicy {
+                    audience: text("audience")?.to_owned(),
+                    expected_image_digest: fixture["image_digest"].as_str().map(str::to_owned),
+                    ..Default::default()
+                },
+                nonce_hex: Some(text("nonce_hex")?.to_owned()),
+                tls_certificate_der: Some(certificate),
+                tls_exporter: None,
+                jwks: Some(fixture["jwks"].clone()),
+                jwks_url: None,
+                http_client: None,
+            },
+        )
+        .await;
+        return match verdict {
+            Ok(_) => Ok(json!({"verified": true})),
+            Err(trusted_router::Error::Attestation(_)) => Ok(json!({"verified": false})),
+            Err(error) => Err(Failure::sdk(error)),
+        };
+    }
     let logical = parse_url("LOGICAL_BASE_URL")?;
     let physical = parse_url("PHYSICAL_ORIGIN")?;
     let logical_host = logical
@@ -133,10 +171,15 @@ async fn run() -> Result<Value, Failure> {
         .control_base_url(logical.as_str())
         .timeout(Some(timeout))
         .max_retries(max_retries)
-        .regional_failover(false)
+        .regional_failover(environment("REGIONAL_FAILOVER")? == "1")
         .telemetry(telemetry)
         .root_certificate_pem(ca_pem)
         .resolve_hostname(logical_host.to_owned(), physical_address);
+    let allowed_hosts: Vec<String> = serde_json::from_str(&environment("ALLOWED_HOSTS_JSON")?)
+        .map_err(|e| Failure::driver(e.to_string()))?;
+    for host in allowed_hosts {
+        builder = builder.resolve_hostname(host, physical_address);
+    }
     for (name, value) in default_headers {
         builder = builder.header(name, value);
     }

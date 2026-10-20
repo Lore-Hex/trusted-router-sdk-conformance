@@ -1,0 +1,62 @@
+{
+  "protocol_version": 1,
+  "name": "failover-503",
+  "description": "Native regional failover moves a retryable 503 from the apex to its first attested alias.",
+  "requires": [
+    "regional_failover"
+  ],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {
+      "model": "test/model",
+      "messages": []
+    },
+    "idempotency_key": "tr-failover-once"
+  },
+  "client": {
+    "endpoint": "default",
+    "regional_failover": true,
+    "max_retries": 1
+  },
+  "actions": [
+    {
+      "kind": "response",
+      "status": 503,
+      "json": {
+        "error": {
+          "message": "unavailable"
+        }
+      }
+    },
+    {
+      "kind": "response",
+      "status": 200,
+      "json": {
+        "ok": true
+      }
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 2,
+    "attempt_hosts": [
+      "api.trustedrouter.com",
+      "api.allyrouter.com"
+    ],
+    "same_headers": [
+      "authorization",
+      "idempotency-key"
+    ],
+    "headers": {
+      "idempotency-key": "tr-failover-once"
+    },
+    "body_json_subset": {
+      "model": "test/model",
+      "messages": []
+    },
+    "value_json_subset": {
+      "ok": true
+    }
+  }
+}

@@ -49,13 +49,53 @@ async function main() {
   }
   const moduleUrl = pathToFileURL(path.resolve(sdkRoot, entry));
   const { TrustedRouter } = await import(moduleUrl.href);
+  if (env("ENTRYPOINT") === "attestation_verify") {
+    const exported = packageJson.exports["./attestation"];
+    const attestationEntry = typeof exported === "string" ? exported : exported.import;
+    const { verifyGatewayAttestation, AttestationVerificationError } = await import(
+      pathToFileURL(path.resolve(sdkRoot, attestationEntry)).href
+    );
+    const fixture = JSON.parse(env("ATTESTATION_JSON"));
+    try {
+      await verifyGatewayAttestation(fixture.document, {
+        policy: { audience: fixture.audience, imageDigest: fixture.image_digest },
+        nonceHex: fixture.nonce_hex,
+        tlsCertDer: Buffer.from(fixture.certificate_der_base64, "base64"),
+        jwks: fixture.jwks,
+      });
+      emit("success", { verified: true });
+    } catch (error) {
+      if (!(error instanceof AttestationVerificationError)) throw error;
+      emit("success", { verified: false });
+    }
+    return;
+  }
   const physical = new URL(env("PHYSICAL_ORIGIN"));
+  const allowedHosts = new Set([...JSON.parse(env("ALLOWED_HOSTS_JSON")), "localhost", "127.0.0.1"]);
+  const { Agent, buildConnector, fetch: transportFetch } = await import(
+    pathToFileURL(env("UNDICI_MODULE")).href
+  );
+  const connector = buildConnector({ ca: await readFile(env("CA_CERT")), allowH2: false });
+  const dispatcher = new Agent({
+    connections: 1,
+    pipelining: 0,
+    connect(options, callback) {
+      if (options.protocol !== "https:" || !allowedHosts.has(options.hostname)) {
+        callback(new Error("refusing unexpected conformance authority"), null);
+        return;
+      }
+      return connector({
+        ...options,
+        hostname: physical.hostname,
+        port: physical.port,
+        servername: options.hostname,
+      }, callback);
+    },
+  });
   const fetchImpl = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input.url);
-    url.protocol = physical.protocol;
-    url.hostname = physical.hostname;
-    url.port = physical.port;
-    return globalThis.fetch(url, init);
+    if (!allowedHosts.has(url.hostname)) throw new Error("refusing unexpected conformance hostname");
+    return transportFetch(input, { ...init, dispatcher });
   };
   const client = new TrustedRouter({
     apiKey: "tr-conformance-key",
@@ -64,7 +104,7 @@ async function main() {
     fetchImpl,
     headers: JSON.parse(env("DEFAULT_HEADERS_JSON")),
     maxRetries: Number(env("MAX_RETRIES")),
-    regionalFailover: false,
+    regionalFailover: env("REGIONAL_FAILOVER") === "1",
     regionalAffinity: false,
     telemetry: env("TELEMETRY") === "1",
   });
@@ -123,6 +163,7 @@ async function main() {
     emit("error", null, error);
   } finally {
     if (cancelTimer !== null) clearTimeout(cancelTimer);
+    await dispatcher.destroy();
   }
 }
 

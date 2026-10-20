@@ -19,7 +19,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from trusted_router_conformance.oracle import verify
 from trusted_router_conformance.schema import load_scenario
-from trusted_router_conformance.server import FaultServer, _Handler
+from trusted_router_conformance.server import FaultServer, _Handler, _ThreadingServer
 
 
 def _context(ca_cert_path: Path) -> ssl.SSLContext:
@@ -96,6 +96,57 @@ def test_empty_connection_does_not_fail_scenario(handler_finished: threading.Eve
         transcript,
     )
     assert checked.ok, checked.failures
+
+
+@pytest.mark.parametrize("reject_certificate", [False, True])
+def test_pre_http_pool_abort_is_observable_but_tls_trust_failure_remains_error(
+    monkeypatch: pytest.MonkeyPatch, reject_certificate: bool
+) -> None:
+    finished = threading.Event()
+    original = _ThreadingServer.finish_request
+
+    def finish(server: _ThreadingServer, request: socket.socket, address: tuple) -> None:
+        try:
+            original(server, request, address)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(_ThreadingServer, "finish_request", finish)
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "01-success.json")
+    with FaultServer(scenario) as server:
+        if reject_certificate:
+            with pytest.raises(ssl.SSLCertVerificationError):
+                _handshake(
+                    server.port,
+                    ssl.create_default_context(),
+                    server_hostname="api.trustedrouter.com",
+                )
+        else:
+            connection = socket.create_connection(("127.0.0.1", server.port), timeout=2)
+            connection.close()
+        assert finished.wait(timeout=3)
+        transcript = server.transcript()
+    assert transcript["requests"] == []
+    assert transcript["tls_handshake_aborts"] == (0 if reject_certificate else 1)
+    if reject_certificate:
+        assert len(transcript["server_errors"]) == 1
+        assert "TLS handshake error" in transcript["server_errors"][0]
+    else:
+        assert transcript["server_errors"] == []
+    # A cancelled connection alone can never satisfy a successful HTTP scenario.
+    checked = verify(
+        scenario,
+        {
+            "protocol_version": 1,
+            "scenario": scenario.name,
+            "outcome": "success",
+            "value": {"ok": True},
+            "error": None,
+        },
+        transcript,
+    )
+    assert any("expected 1 wire attempts, got 0" in failure for failure in checked.failures)
 
 
 def test_partial_header_connection_records_error(handler_finished: threading.Event) -> None:
@@ -475,6 +526,9 @@ def test_tls_material_is_ephemeral_unique_and_a_valid_ca_leaf_chain() -> None:
         ).value
         assert set(names.get_values_for_type(x509.DNSName)) == {
             "api.trustedrouter.com",
+            "api.allyrouter.com",
+            "api.uptimerouter.com",
+            "api-us-central1.quillrouter.com",
             "localhost",
         }
         assert [str(value) for value in names.get_values_for_type(x509.IPAddress)] == ["127.0.0.1"]

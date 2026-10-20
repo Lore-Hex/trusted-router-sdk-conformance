@@ -14,6 +14,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from trusted_router_conformance.endpoints import API_HOSTS
+
 
 def _key_usage(*, certificate_authority: bool) -> x509.KeyUsage:
     return x509.KeyUsage(
@@ -89,7 +91,7 @@ def _generate(directory: Path) -> tuple[Path, Path, Path]:
         .add_extension(
             x509.SubjectAlternativeName(
                 [
-                    x509.DNSName("api.trustedrouter.com"),
+                    *(x509.DNSName(host) for host in API_HOSTS),
                     x509.DNSName("localhost"),
                     x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
                 ]

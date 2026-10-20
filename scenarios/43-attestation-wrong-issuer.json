@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "name": "attestation-wrong-issuer",
+  "description": "Valid cryptography does not excuse an untrusted issuer.",
+  "requires": [
+    "attestation_validation"
+  ],
+  "operation": {
+    "entrypoint": "attestation_verify",
+    "method": "GET",
+    "path": "/attestation"
+  },
+  "attestation_case": "wrong-issuer",
+  "actions": [],
+  "expect": {
+    "outcome": "success",
+    "attempts": 0,
+    "value_json_subset": {
+      "verified": false
+    }
+  }
+}

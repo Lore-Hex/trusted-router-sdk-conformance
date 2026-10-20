@@ -1,0 +1,7 @@
+{
+  "name": "trustedrouter-conformance-javascript-driver",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=20.18.1"},
+  "dependencies": {"undici": "7.30.1"}
+}

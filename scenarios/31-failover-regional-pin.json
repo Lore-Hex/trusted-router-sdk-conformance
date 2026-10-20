@@ -1,0 +1,54 @@
+{
+  "protocol_version": 1,
+  "name": "failover-regional-pin",
+  "description": "An explicitly pinned regional endpoint never silently escapes to global or alias routing.",
+  "requires": [
+    "regional_failover"
+  ],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {
+      "model": "test/model"
+    },
+    "idempotency_key": "tr-region-pin"
+  },
+  "client": {
+    "endpoint": "regional_pin",
+    "regional_failover": true,
+    "max_retries": 1
+  },
+  "actions": [
+    {
+      "kind": "response",
+      "status": 503,
+      "json": {
+        "error": {
+          "message": "region unavailable"
+        }
+      }
+    },
+    {
+      "kind": "response",
+      "status": 200,
+      "json": {
+        "ok": true
+      }
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 2,
+    "attempt_hosts": [
+      "api-us-central1.quillrouter.com",
+      "api-us-central1.quillrouter.com"
+    ],
+    "same_headers": [
+      "authorization",
+      "idempotency-key"
+    ],
+    "value_json_subset": {
+      "ok": true
+    }
+  }
+}

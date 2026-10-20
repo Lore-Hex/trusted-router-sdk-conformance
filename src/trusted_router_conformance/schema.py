@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from trusted_router_conformance.attestation import CASES as ATTESTATION_CASES
+
 PROTOCOL_VERSION = 1
 ACTION_KINDS = {
     "response",
@@ -27,6 +29,7 @@ ENTRYPOINTS = {
     "chat_stream_collect",
     "responses",
     "oauth_exchange",
+    "attestation_verify",
 }
 _ENTRYPOINT_OPERATIONS = {
     "chat_completions": ("POST", "/chat/completions"),
@@ -128,6 +131,8 @@ class ClientConfig:
     telemetry: bool
     cancel_after_ms: int | None
     default_headers: dict[str, str]
+    regional_failover: bool = False
+    endpoint: str = "isolated"
 
 
 @dataclass(frozen=True)
@@ -140,6 +145,7 @@ class Scenario:
     actions: tuple[dict[str, Any], ...]
     expect: dict[str, Any]
     path: Path
+    attestation_case: str | None = None
 
 
 @dataclass(frozen=True)
@@ -169,6 +175,7 @@ def load_scenario(path: str | Path) -> Scenario:
             "client",
             "actions",
             "expect",
+            "attestation_case",
         },
         str(source),
     )
@@ -191,6 +198,12 @@ def load_scenario(path: str | Path) -> Scenario:
     entrypoint = operation_raw.get("entrypoint", "generic_json")
     if entrypoint not in ENTRYPOINTS:
         raise SchemaError(f"{source}.operation.entrypoint must be one of {sorted(ENTRYPOINTS)}")
+    attestation_case = data.get("attestation_case")
+    if entrypoint == "attestation_verify":
+        if not isinstance(attestation_case, str) or attestation_case not in ATTESTATION_CASES:
+            raise SchemaError(f"{source}.attestation_case must name a supported verifier fixture")
+    elif attestation_case is not None:
+        raise SchemaError(f"{source}.attestation_case requires attestation_verify")
     method = _string(operation_raw.get("method"), f"{source}.operation.method").upper()
     path_value = _string(operation_raw.get("path"), f"{source}.operation.path")
     if not path_value.startswith("/") or path_value.startswith("//"):
@@ -216,12 +229,20 @@ def load_scenario(path: str | Path) -> Scenario:
             "telemetry",
             "cancel_after_ms",
             "default_headers",
+            "regional_failover",
+            "endpoint",
         },
         f"{source}.client",
     )
     max_retries = client_raw.get("max_retries", 0)
     timeout_ms = client_raw.get("timeout_ms", 2_000)
     telemetry = client_raw.get("telemetry", False)
+    regional_failover = client_raw.get("regional_failover", False)
+    endpoint = client_raw.get("endpoint", "isolated")
+    if not isinstance(regional_failover, bool):
+        raise SchemaError(f"{source}.client.regional_failover must be a boolean")
+    if endpoint not in ("isolated", "default", "regional_pin"):
+        raise SchemaError(f"{source}.client.endpoint must be isolated, default, or regional_pin")
     cancel_after_ms = client_raw.get("cancel_after_ms")
     default_headers = _headers(
         client_raw.get("default_headers", {}),
@@ -243,8 +264,12 @@ def load_scenario(path: str | Path) -> Scenario:
         raise SchemaError(f"{source}.client.cancel_after_ms must be less than timeout_ms")
 
     actions_raw = data.get("actions")
-    if not isinstance(actions_raw, list) or not actions_raw:
-        raise SchemaError(f"{source}.actions must be a non-empty array")
+    if not isinstance(actions_raw, list) or (
+        not actions_raw and entrypoint != "attestation_verify"
+    ):
+        raise SchemaError(f"{source}.actions must be a non-empty array for HTTP scenarios")
+    if entrypoint == "attestation_verify" and actions_raw:
+        raise SchemaError(f"{source}.attestation_verify must not send HTTP requests")
     actions: list[dict[str, Any]] = []
     for index, candidate in enumerate(actions_raw):
         where = f"{source}.actions[{index}]"
@@ -330,6 +355,7 @@ def load_scenario(path: str | Path) -> Scenario:
             "headers",
             "attempt_headers",
             "error_status",
+            "attempt_hosts",
         },
         f"{source}.expect",
     )
@@ -347,8 +373,17 @@ def load_scenario(path: str | Path) -> Scenario:
         ):
             raise SchemaError(f"{source}.expect.error_status must be 100..599")
     attempts = expect.get("attempts")
-    if not isinstance(attempts, int) or isinstance(attempts, bool) or attempts <= 0:
-        raise SchemaError(f"{source}.expect.attempts must be a positive integer")
+    minimum = 0 if entrypoint == "attestation_verify" else 1
+    if not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < minimum:
+        raise SchemaError(f"{source}.expect.attempts must be an integer >= {minimum}")
+    attempt_hosts = expect.get("attempt_hosts")
+    if attempt_hosts is not None:
+        if not isinstance(attempt_hosts, list) or len(attempt_hosts) != attempts:
+            raise SchemaError(f"{source}.expect.attempt_hosts must contain {attempts} hosts")
+        if not all(
+            isinstance(host, str) and re.fullmatch(r"[a-z0-9.-]+", host) for host in attempt_hosts
+        ):
+            raise SchemaError(f"{source}.expect.attempt_hosts contains an invalid hostname")
     if len(actions) != attempts:
         raise SchemaError(
             f"{source}: actions has {len(actions)} entries but expect.attempts is {attempts}"
@@ -387,10 +422,13 @@ def load_scenario(path: str | Path) -> Scenario:
             telemetry=telemetry,
             cancel_after_ms=cancel_after_ms,
             default_headers=dict(default_headers),
+            regional_failover=regional_failover,
+            endpoint=endpoint,
         ),
         actions=tuple(actions),
         expect=expect,
         path=source,
+        attestation_case=attestation_case,
     )
 
 

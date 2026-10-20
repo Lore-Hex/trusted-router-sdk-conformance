@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "name": "attestation-missing-nonce",
+  "description": "Certificate evidence without the fresh challenge is rejected.",
+  "requires": [
+    "attestation_validation"
+  ],
+  "operation": {
+    "entrypoint": "attestation_verify",
+    "method": "GET",
+    "path": "/attestation"
+  },
+  "attestation_case": "missing-nonce",
+  "actions": [],
+  "expect": {
+    "outcome": "success",
+    "attempts": 0,
+    "value_json_subset": {
+      "verified": false
+    }
+  }
+}

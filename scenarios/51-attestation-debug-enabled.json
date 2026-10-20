@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "name": "attestation-debug-enabled",
+  "description": "Production verification refuses debug-mode evidence.",
+  "requires": [
+    "attestation_validation"
+  ],
+  "operation": {
+    "entrypoint": "attestation_verify",
+    "method": "GET",
+    "path": "/attestation"
+  },
+  "attestation_case": "debug-enabled",
+  "actions": [],
+  "expect": {
+    "outcome": "success",
+    "attempts": 0,
+    "value_json_subset": {
+      "verified": false
+    }
+  }
+}

@@ -24,7 +24,8 @@ of physical attempts, duplicate headers after retries, generated
 idempotency-key drift, transport-library recovery, cross-origin replay,
 response-body deadlines, cancellation, premature streaming success,
 credential scope, typed-model data loss, response-verdict precedence, and
-telemetry state carried from one attempt to the next.
+telemetry state carried from one attempt to the next, native domain failover,
+and cryptographic attestation acceptance and rejection.
 
 ## Quick start
 
@@ -66,6 +67,8 @@ tr-conformance \
 The drivers compile against those source checkouts, not against an assumed
 published version. Language package dependencies may be downloaded by the
 native build tool on first use.
+The JavaScript driver needs Node 20.18.1 or newer and installs its locked
+Undici transport in a temporary build cache, not in the SDK under test.
 
 ## Scenarios and capabilities
 
@@ -90,12 +93,18 @@ silently treat an unimplemented behavior as a pass.
 
 The server binds only an ephemeral `127.0.0.1` port. For every server run, the
 harness creates a fresh in-memory private root and a CA-signed, non-CA server
-leaf for `api.trustedrouter.com`, `localhost`, and `127.0.0.1`. Drivers trust
+leaf for the fixed API hosts in `endpoints.py`, `localhost`, and `127.0.0.1`. Drivers trust
 only that run's temporary root; no system trust store or `/etc/hosts` mutation
 is needed. The CA signing key is never serialized, the temporary leaf key is
 deleted after the server TLS context loads it, and the remaining temporary
 certificates are removed at shutdown. No certificate or private-key PEM is
 stored in the repository or wheel.
+
+Attestation cases also generate a fresh, in-memory signing key and pass only
+public evidence to the SDK verifier. They require no live provider, Google
+credential, or production request. See the [coverage boundaries](docs/coverage.md)
+for the distinction between fixture validation, native domain failover, and
+live regional/session attestation.
 
 The fake API key and request content are fixed test values. Proxy environment
 variables are bypassed so a developer's proxy cannot receive them.

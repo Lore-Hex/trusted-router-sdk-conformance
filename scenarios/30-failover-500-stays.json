@@ -1,0 +1,55 @@
+{
+  "protocol_version": 1,
+  "name": "failover-500-stays",
+  "description": "A retryable 500 is not a regional failover signal and must stay on the same authority.",
+  "requires": [
+    "regional_failover",
+    "retry_500"
+  ],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {
+      "model": "test/model"
+    },
+    "idempotency_key": "tr-500-same-host"
+  },
+  "client": {
+    "endpoint": "default",
+    "regional_failover": true,
+    "max_retries": 1
+  },
+  "actions": [
+    {
+      "kind": "response",
+      "status": 500,
+      "json": {
+        "error": {
+          "message": "retry in place"
+        }
+      }
+    },
+    {
+      "kind": "response",
+      "status": 200,
+      "json": {
+        "ok": true
+      }
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 2,
+    "attempt_hosts": [
+      "api.trustedrouter.com",
+      "api.trustedrouter.com"
+    ],
+    "same_headers": [
+      "authorization",
+      "idempotency-key"
+    ],
+    "value_json_subset": {
+      "ok": true
+    }
+  }
+}

@@ -108,6 +108,36 @@ def test_driver_environment_contains_extended_operation_contract(tmp_path: Path)
     }
 
 
+def test_driver_environment_contains_only_public_attestation_material(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "40-attestation-valid.json")
+    server = SimpleNamespace(
+        logical_base_url="https://api.trustedrouter.com:1234/v1",
+        physical_origin="https://127.0.0.1:1234",
+        ca_cert_path=tmp_path / "ephemeral-ca.pem",
+        certificate_der=b"leaf",
+    )
+    env = _driver_env(scenario, server, root)
+    evidence = json.loads(env["TR_CONFORMANCE_ATTESTATION_JSON"])
+    assert set(evidence) == {
+        "document",
+        "jwks",
+        "nonce_hex",
+        "certificate_der_base64",
+        "image_digest",
+        "audience",
+    }
+    assert "PRIVATE KEY" not in json.dumps(evidence)
+    assert "d" not in evidence["jwks"]["keys"][0]
+    assert env["TR_CONFORMANCE_REGIONAL_FAILOVER"] == "0"
+
+    failover = load_scenario(root / "scenarios" / "26-failover-503.json")
+    env = _driver_env(failover, server, root)
+    assert env["TR_CONFORMANCE_REGIONAL_FAILOVER"] == "1"
+    assert env["TR_CONFORMANCE_ENDPOINT"] == "default"
+    assert "TR_CONFORMANCE_ATTESTATION_JSON" not in env
+
+
 def test_missing_driver_executable_is_a_failed_report_entry(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     scenario = load_scenario(root / "scenarios" / "01-success.json")

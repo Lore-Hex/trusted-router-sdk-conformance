@@ -1,0 +1,70 @@
+{
+  "protocol_version": 1,
+  "name": "failover-chain",
+  "description": "A 502 then 504 traverses both aliases within one logical retry budget.",
+  "requires": [
+    "regional_failover"
+  ],
+  "operation": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "body": {
+      "model": "test/model",
+      "messages": []
+    },
+    "idempotency_key": "tr-failover-chain"
+  },
+  "client": {
+    "endpoint": "default",
+    "regional_failover": true,
+    "max_retries": 2,
+    "timeout_ms": 5000
+  },
+  "actions": [
+    {
+      "kind": "response",
+      "status": 502,
+      "json": {
+        "error": {
+          "message": "unavailable"
+        }
+      }
+    },
+    {
+      "kind": "response",
+      "status": 504,
+      "json": {
+        "error": {
+          "message": "unavailable"
+        }
+      }
+    },
+    {
+      "kind": "response",
+      "status": 200,
+      "json": {
+        "ok": true
+      }
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "attempts": 3,
+    "attempt_hosts": [
+      "api.trustedrouter.com",
+      "api.allyrouter.com",
+      "api.uptimerouter.com"
+    ],
+    "same_headers": [
+      "authorization",
+      "idempotency-key"
+    ],
+    "body_json_subset": {
+      "model": "test/model",
+      "messages": []
+    },
+    "value_json_subset": {
+      "ok": true
+    }
+  }
+}

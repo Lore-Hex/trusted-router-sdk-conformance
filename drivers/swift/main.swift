@@ -37,6 +37,11 @@ private func optionalEnvironment(_ name: String, default defaultValue: String = 
     ProcessInfo.processInfo.environment["TR_CONFORMANCE_\(name)"] ?? defaultValue
 }
 
+private func allowedHosts() -> Set<String> {
+    let data = Data(optionalEnvironment("ALLOWED_HOSTS_JSON", default: "[]").utf8)
+    return Set((try? JSONSerialization.jsonObject(with: data)) as? [String] ?? [])
+}
+
 #if canImport(Security)
 /// Darwin URLSession does not honor the libcurl CA environment variables.
 /// Anchor each physical forwarding session to the harness certificate and to
@@ -97,7 +102,7 @@ private final class LogicalOriginProtocol: URLProtocol, @unchecked Sendable {
     private var forwardingDelegate: PhysicalForwardingDelegate?
 
     override class func canInit(with request: URLRequest) -> Bool {
-        request.url?.host?.lowercased() == "api.trustedrouter.com"
+        allowedHosts().contains(request.url?.host?.lowercased() ?? "")
     }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest {
@@ -313,7 +318,7 @@ private final class PhysicalForwardingDelegate: NSObject, URLSessionDataDelegate
 
 private func logicalHTTPSBaseURL(_ rawValue: String) throws -> String {
     guard var components = URLComponents(string: rawValue),
-          components.host?.lowercased() == "api.trustedrouter.com"
+          allowedHosts().contains(components.host?.lowercased() ?? "")
     else {
         throw DriverFailure.invalidEnvironment("invalid TR_CONFORMANCE_LOGICAL_BASE_URL")
     }
@@ -418,6 +423,32 @@ private func emit(outcome: String, value: Any?, error: Error?) {
 private enum DriverMain {
     static func main() async {
         do {
+            if try environment("ENTRYPOINT") == "attestation_verify" {
+                let data = Data(try environment("ATTESTATION_JSON").utf8)
+                guard let fixture = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let document = fixture["document"] as? String,
+                      let nonce = fixture["nonce_hex"] as? String,
+                      let audience = fixture["audience"] as? String,
+                      let certificateString = fixture["certificate_der_base64"] as? String,
+                      let certificate = Data(base64Encoded: certificateString),
+                      let jwks = fixture["jwks"] as? [String: Any]
+                else {
+                    throw DriverFailure.invalidEnvironment("invalid attestation fixture")
+                }
+                do {
+                    _ = try await verifyGatewayAttestation(
+                        document: Data(document.utf8),
+                        policy: AttestationPolicy(
+                            audience: audience, imageDigest: fixture["image_digest"] as? String
+                        ),
+                        nonceHex: nonce, tlsCertDer: certificate, jwks: jwks
+                    )
+                    emit(outcome: "success", value: ["verified": true], error: nil)
+                } catch is AttestationVerificationError {
+                    emit(outcome: "success", value: ["verified": false], error: nil)
+                }
+                return
+            }
             let configuration = URLSessionConfiguration.ephemeral
             configuration.protocolClasses = [LogicalOriginProtocol.self]
             configuration.httpAdditionalHeaders = try requestHeaders(
@@ -458,11 +489,11 @@ private enum DriverMain {
             } else {
                 client = try TrustedRouter(options: TrustedRouterOptions(
                     apiKey: "tr-conformance-key",
-                    baseUrl: logicalBaseURL,
+                    baseUrl: optionalEnvironment("ENDPOINT") == "default" ? nil : logicalBaseURL,
                     controlBaseURL: logicalBaseURL,
                     urlSession: session,
                     maxRetries: maxRetries,
-                    regionalFailover: false,
+                    regionalFailover: optionalEnvironment("REGIONAL_FAILOVER") == "1",
                     telemetry: telemetryRaw == "1",
                     regionalAffinity: false
                 ))

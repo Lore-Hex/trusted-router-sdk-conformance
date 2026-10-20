@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from trusted_router_conformance.oracle import verify
 from trusted_router_conformance.schema import load_scenario
 
@@ -130,3 +132,51 @@ def test_oracle_requires_terminal_http_status_in_normalized_error() -> None:
     checked = verify(scenario, result, transcript, expected_sdk="python")
     assert not checked.ok
     assert any("status_code expected 503" in failure for failure in checked.failures)
+
+
+@pytest.mark.parametrize("host", ["api.trustedrouter.com", "[invalid", "attacker.invalid"])
+def test_failover_cannot_pass_by_retrying_the_wrong_host(host: str) -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = load_scenario(root / "scenarios" / "26-failover-503.json")
+    requests = [
+        {
+            "method": scenario.operation.method,
+            "target": "/v1/chat/completions",
+            "headers": {
+                "host": [destination],
+                **{name: [value] for name, value in scenario.operation.headers.items()},
+            },
+            "body_json": scenario.operation.body,
+        }
+        for destination in ["api.trustedrouter.com", host]
+    ]
+    result = {
+        "protocol_version": 1,
+        "sdk": "python",
+        "scenario": scenario.name,
+        "outcome": "success",
+        "value": {"ok": True},
+        "error": None,
+    }
+    checked = verify(scenario, result, {"requests": requests, "server_errors": []})
+    assert any("destination host expected" in failure for failure in checked.failures)
+
+
+def test_rejecting_valid_evidence_or_accepting_invalid_evidence_fails() -> None:
+    root = Path(__file__).resolve().parents[1]
+    for filename, wrong_verdict in [
+        ("40-attestation-valid.json", False),
+        ("41-attestation-invalid-signature.json", True),
+    ]:
+        scenario = load_scenario(root / "scenarios" / filename)
+        result = {
+            "protocol_version": 1,
+            "sdk": "python",
+            "scenario": scenario.name,
+            "outcome": "success",
+            "value": {"verified": wrong_verdict},
+            "error": None,
+        }
+        checked = verify(scenario, result, {"requests": [], "server_errors": []})
+        assert not checked.ok
+        assert any("verified" in failure for failure in checked.failures)

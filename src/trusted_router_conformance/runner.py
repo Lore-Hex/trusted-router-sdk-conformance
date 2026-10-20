@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from trusted_router_conformance.attestation import build_fixture
+from trusted_router_conformance.endpoints import API_HOSTS
 from trusted_router_conformance.oracle import Verification, verify
 from trusted_router_conformance.paths import repository_root
 from trusted_router_conformance.schema import (
@@ -177,6 +179,9 @@ def _driver_env(
                 ensure_ascii=False,
             ),
             "TR_CONFORMANCE_CA_CERT": str(ca_cert),
+            "TR_CONFORMANCE_REGIONAL_FAILOVER": ("1" if scenario.client.regional_failover else "0"),
+            "TR_CONFORMANCE_ENDPOINT": scenario.client.endpoint,
+            "TR_CONFORMANCE_ALLOWED_HOSTS_JSON": json.dumps(API_HOSTS),
             # Node reads additional roots only during process initialization.
             "NODE_EXTRA_CA_CERTS": str(ca_cert),
             # A process-global proxy inherited from a developer shell would route the
@@ -185,6 +190,10 @@ def _driver_env(
             "no_proxy": "*",
         }
     )
+    if scenario.attestation_case is not None:
+        env["TR_CONFORMANCE_ATTESTATION_JSON"] = json.dumps(
+            build_fixture(scenario.attestation_case, server.certificate_der)
+        )
     return env
 
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -76,8 +77,8 @@ func parsedURL(name string) (*url.URL, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", name, err)
 	}
-	if parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.Port() == "" {
-		return nil, fmt.Errorf("%s must be an https URL with an explicit port", name)
+	if parsed.Scheme != "https" || parsed.Hostname() == "" || (name == "PHYSICAL_ORIGIN" && parsed.Port() == "") {
+		return nil, fmt.Errorf("%s must be an https URL (physical origin requires a port)", name)
 	}
 	return parsed, nil
 }
@@ -94,6 +95,14 @@ func newHTTPClient(logical, physical *url.URL, caPath string) (*http.Client, err
 
 	dialer := &net.Dialer{}
 	logicalHostname := logical.Hostname()
+	var allowedHosts []string
+	if err := json.Unmarshal([]byte(os.Getenv("TR_CONFORMANCE_ALLOWED_HOSTS_JSON")), &allowedHosts); err != nil {
+		return nil, err
+	}
+	allowed := map[string]bool{logicalHostname: true, physical.Hostname(): true, "localhost": true}
+	for _, host := range allowedHosts {
+		allowed[host] = true
+	}
 	physicalAddress := physical.Host
 	transport := &http.Transport{
 		Proxy:               nil,
@@ -110,12 +119,10 @@ func newHTTPClient(logical, physical *url.URL, caPath string) (*http.Client, err
 			if splitErr != nil {
 				return nil, fmt.Errorf("unexpected SDK dial address %q: %w", address, splitErr)
 			}
-			if port != physical.Port() {
+			if port != physical.Port() && port != "443" {
 				return nil, fmt.Errorf("refusing unexpected SDK dial port %q", port)
 			}
-			if !strings.EqualFold(host, logicalHostname) &&
-				!strings.EqualFold(host, physical.Hostname()) &&
-				!strings.EqualFold(host, "localhost") {
+			if !allowed[strings.ToLower(host)] {
 				return nil, fmt.Errorf("refusing unexpected SDK dial host %q", host)
 			}
 			return dialer.DialContext(ctx, network, physicalAddress)
@@ -229,6 +236,32 @@ func execute(
 }
 
 func run() (any, error) {
+	if os.Getenv("TR_CONFORMANCE_ENTRYPOINT") == "attestation_verify" {
+		var fixture struct {
+			Document    string         `json:"document"`
+			JWKS        map[string]any `json:"jwks"`
+			Nonce       string         `json:"nonce_hex"`
+			Certificate string         `json:"certificate_der_base64"`
+			ImageDigest string         `json:"image_digest"`
+			Audience    string         `json:"audience"`
+		}
+		if err := json.Unmarshal([]byte(os.Getenv("TR_CONFORMANCE_ATTESTATION_JSON")), &fixture); err != nil {
+			return nil, err
+		}
+		certificate, err := base64.StdEncoding.DecodeString(fixture.Certificate)
+		if err != nil {
+			return nil, err
+		}
+		_, err = trustedrouter.VerifyGatewayAttestation(context.Background(), []byte(fixture.Document), trustedrouter.VerifyGatewayAttestationOptions{
+			Policy:   trustedrouter.AttestationPolicy{GCPAudience: fixture.Audience, ExpectedImageDigest: fixture.ImageDigest},
+			NonceHex: fixture.Nonce, TLSCertDER: certificate, JWKS: fixture.JWKS,
+		})
+		var rejected *trustedrouter.AttestationVerificationError
+		if err != nil && !errors.As(err, &rejected) {
+			return nil, err
+		}
+		return map[string]bool{"verified": err == nil}, nil
+	}
 	logical, err := parsedURL("LOGICAL_BASE_URL")
 	if err != nil {
 		return nil, err
@@ -272,7 +305,7 @@ func run() (any, error) {
 		return nil, fmt.Errorf("TELEMETRY must be 0 or 1")
 	}
 	telemetry := telemetryRaw == "1"
-	regionalFailover := false
+	regionalFailover := os.Getenv("TR_CONFORMANCE_REGIONAL_FAILOVER") == "1"
 	defaultHeadersRaw, err := environment("DEFAULT_HEADERS_JSON")
 	if err != nil {
 		return nil, err

@@ -7,6 +7,8 @@ def test_capability_baseline_is_explicit() -> None:
     expected = frozenset(
         {
             "body_timeout",
+            "attestation_validation",
+            "regional_failover",
             "caller_cancellation",
             "core",
             "credential_free_oauth",
