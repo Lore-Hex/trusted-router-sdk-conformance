@@ -57,9 +57,12 @@ def test_empty_connection_does_not_fail_scenario(handler_finished: threading.Eve
     scenario = load_scenario(root / "scenarios" / "01-success.json")
     with FaultServer(scenario) as server:
         context = _context(server.ca_cert_path)
-        # Complete TLS, then close without sending any HTTP request bytes.
-        _handshake(server.port, context, server_hostname="127.0.0.1")
-        assert handler_finished.wait(timeout=2), "empty connection handler did not finish"
+        # Keep the read side open for TLS 1.3 post-handshake messages until the
+        # server observes EOF; a full close can race those writes on Linux.
+        with socket.create_connection(("127.0.0.1", server.port), timeout=2) as connection:
+            with context.wrap_socket(connection, server_hostname="127.0.0.1") as tls:
+                tls.shutdown(socket.SHUT_WR)
+                assert handler_finished.wait(timeout=2), "empty connection handler did not finish"
         assert server.transcript()["requests"] == []
 
         connection = http.client.HTTPSConnection(
@@ -157,7 +160,8 @@ def test_partial_header_connection_records_error(handler_finished: threading.Eve
         with socket.create_connection(("127.0.0.1", server.port), timeout=2) as connection:
             with context.wrap_socket(connection, server_hostname="127.0.0.1") as tls:
                 tls.sendall(b"POST /v1/chat/completions HTTP/1.")
-        assert handler_finished.wait(timeout=2), "partial header handler did not finish"
+                tls.shutdown(socket.SHUT_WR)
+                assert handler_finished.wait(timeout=2), "partial header handler did not finish"
         transcript = server.transcript()
 
     assert transcript["requests"] == []
