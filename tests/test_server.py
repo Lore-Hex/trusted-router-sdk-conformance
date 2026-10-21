@@ -26,6 +26,17 @@ def _context(ca_cert_path: Path) -> ssl.SSLContext:
     return ssl.create_default_context(cafile=ca_cert_path)
 
 
+def _close_tls(tls: ssl.SSLSocket) -> None:
+    # Send close_notify and consume TLS 1.3 session tickets before closing TCP.
+    # An immediate close can reset unread tickets on Linux instead of delivering
+    # the empty/partial HTTP stream these fixtures are intended to exercise.
+    try:
+        tls.unwrap()
+    except ssl.SSLEOFError:
+        # FaultServer closes TCP after handling EOF; it does not send close_notify.
+        pass
+
+
 def _handshake(
     port: int,
     context: ssl.SSLContext,
@@ -33,8 +44,8 @@ def _handshake(
     server_hostname: str,
 ) -> None:
     with socket.create_connection(("127.0.0.1", port), timeout=2) as connection:
-        with context.wrap_socket(connection, server_hostname=server_hostname):
-            pass
+        with context.wrap_socket(connection, server_hostname=server_hostname) as tls:
+            _close_tls(tls)
 
 
 @pytest.fixture
@@ -157,6 +168,7 @@ def test_partial_header_connection_records_error(handler_finished: threading.Eve
         with socket.create_connection(("127.0.0.1", server.port), timeout=2) as connection:
             with context.wrap_socket(connection, server_hostname="127.0.0.1") as tls:
                 tls.sendall(b"POST /v1/chat/completions HTTP/1.")
+                _close_tls(tls)
         assert handler_finished.wait(timeout=2), "partial header handler did not finish"
         transcript = server.transcript()
 
